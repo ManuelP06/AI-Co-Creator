@@ -5,7 +5,8 @@ import psutil
 
 MODEL_NAME = "DAMO-NLP-SG/VideoLLaMA3-7B"
 
-os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+# Optimized CUDA configuration for RTX 5080
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True,max_split_size_mb:256")
 
 _model = None
 _processor = None
@@ -26,149 +27,184 @@ def get_gpu_memory_info():
     return None
 
 def aggressive_cleanup():
+    """Comprehensive memory cleanup"""
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
+        # Multiple cleanup cycles for stubborn allocations
+        for _ in range(5):
+            gc.collect()
+            torch.cuda.empty_cache()
+
+def force_unload_all_models():
+    """Complete model cleanup"""
+    global _model, _processor, _model_on_cpu
+    
+    if _model is not None:
+        # Properly cleanup model
+        if hasattr(_model, 'cpu'):
+            _model.cpu()
+        del _model
+        _model = None
+        
+    if _processor is not None:
+        del _processor
+        _processor = None
+        
+    _model_on_cpu = False
+    
+    # Comprehensive cleanup
+    aggressive_cleanup()
+    
+    # Clear Python caches
+    import sys
+    if hasattr(sys, '_clear_type_cache'):
+        sys._clear_type_cache()
 
 def _load_model_once(force_cpu=False) -> Tuple[AutoModelForCausalLM, AutoProcessor]:
     global _model, _processor, _model_on_cpu
     
-    if _model is not None and _processor is not None:
-        if force_cpu and not _model_on_cpu:
-            print("Moving model to CPU...")
-            _model = _model.cpu()
-            _model_on_cpu = True
-            aggressive_cleanup()
-        elif not force_cpu and _model_on_cpu:
-            gpu_info = get_gpu_memory_info()
-            if gpu_info and gpu_info['free_gb'] > 8.0: 
-                print("Moving model back to GPU...")
-                try:
-                    _model = _model.cuda()
-                    _model_on_cpu = False
-                except torch.cuda.OutOfMemoryError:
-                    print("Not enough GPU memory, keeping on CPU")
-        
+    # Return existing model if configuration matches
+    if _model is not None and _processor is not None and force_cpu == _model_on_cpu:
+        print(f"Model already loaded in correct mode ({'CPU' if _model_on_cpu else 'GPU'})")
         return _model, _processor
-
-    aggressive_cleanup()
-
-    dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16
-
-    attn_impl = "flash_attention_2"
-    try:
-        import flash_attn 
-    except Exception:
-        attn_impl = "eager"
-
-    max_mem = {}
-    if not force_cpu and torch.cuda.is_available():
-        gpu_info = get_gpu_memory_info()
-        if gpu_info:
-            available_gpu = max(8.0, gpu_info['total_gb'] - 2.0)
-            max_mem[0] = f"{available_gpu:.0f}GB"
     
-    max_mem["cpu"] = "60GB" 
-    
-    device_map = "cpu" if force_cpu else "auto"
+    # Unload if configuration doesn't match
+    if _model is not None or _processor is not None:
+        print(f"Configuration change detected, reloading model...")
+        force_unload_all_models()
 
-    print(f"Loading VideoLLaMA3 model... (force_cpu={force_cpu}, device_map={device_map})")
+    gpu_info = get_gpu_memory_info()
+    
+    # Smart device selection for RTX 5080
+    if not force_cpu and torch.cuda.is_available() and gpu_info:
+        if gpu_info['free_gb'] < 12.0:  # Need 12GB+ for stable GPU inference
+            print(f"Insufficient GPU memory ({gpu_info['free_gb']:.1f}GB free), using CPU mode")
+            force_cpu = True
+    
+    # Configure loading parameters
+    if force_cpu:
+        dtype = torch.float32  # CPU works better with float32
+        max_mem = {"cpu": "48GB"}  # Use more of your 64GB RAM
+        device_map = "cpu"
+        print("Loading in CPU mode with float32 precision")
+    else:
+        dtype = torch.float16  # GPU efficiency with float16
+        max_mem = {0: "10GB", "cpu": "48GB"}  # Conservative GPU allocation
+        device_map = "auto"
+        print("Loading in GPU mode with float16 precision")
+    
+    print(f"Target device: {'CPU' if force_cpu else 'GPU'}")
     print(f"Memory limits: {max_mem}")
+    print(f"Model dtype: {dtype}")
+    
+    loading_kwargs = {
+        'trust_remote_code': True,
+        'device_map': device_map,
+        'torch_dtype': dtype,
+        'low_cpu_mem_usage': True,
+        'max_memory': max_mem,
+        'offload_folder': './offload_cache',  # Offload to disk if needed
+    }
     
     try:
-        _model = AutoModelForCausalLM.from_pretrained(
-            MODEL_NAME,
-            trust_remote_code=True,
-            device_map=device_map,
-            torch_dtype=dtype,
-            attn_implementation=attn_impl,
-            low_cpu_mem_usage=True,
-            max_memory=max_mem,
-            offload_folder="./model_offload" if not force_cpu else None,  
-        )
-        
+        print("Loading model weights...")
+        _model = AutoModelForCausalLM.from_pretrained(MODEL_NAME, **loading_kwargs)
         _processor = AutoProcessor.from_pretrained(MODEL_NAME, trust_remote_code=True)
+        
+        # Set model to evaluation mode
+        _model.eval()
         _model_on_cpu = force_cpu
         
+        # Memory status after loading
         gpu_mem = get_gpu_memory_info()
         ram_usage = psutil.virtual_memory().percent
         
-        print(f"Model loaded successfully.")
+        print(f"Model loaded successfully ({'CPU' if force_cpu else 'GPU'} mode)")
         if gpu_mem:
-            print(f"GPU memory: {gpu_mem['reserved_gb']:.1f}GB reserved, {gpu_mem['free_gb']:.1f}GB free")
-        print(f"RAM usage: {ram_usage:.1f}%")
+            print(f"GPU: {gpu_mem['allocated_gb']:.1f}GB allocated, {gpu_mem['free_gb']:.1f}GB free")
+        print(f"RAM: {ram_usage:.1f}% used")
+        
+        return _model, _processor
         
     except Exception as e:
-        print(f"Failed to load model: {e}")
-        _model = None
-        _processor = None
-        _model_on_cpu = False
-        aggressive_cleanup()
+        print(f"Model loading failed: {e}")
+        force_unload_all_models()
         raise
+
+def smart_tensor_preparation(inputs, model, target_cpu=False):
+    """Optimized tensor placement and dtype conversion"""
     
-    return _model, _processor
-
-def unload_model():
-    global _model, _processor, _model_on_cpu
-    if _model is not None:
-        del _model
-        _model = None
-    if _processor is not None:
-        del _processor
-        _processor = None
-    _model_on_cpu = False
-    aggressive_cleanup()
-    print("Model unloaded from memory")
-
-def smart_tensor_placement(inputs, model, prefer_gpu=True):
-    """Smart tensor placement based on available memory"""
-    if not prefer_gpu or _model_on_cpu:
-        device = "cpu"
+    # Determine target configuration
+    if target_cpu or _model_on_cpu:
+        target_device = torch.device("cpu")
+        target_dtype = torch.float32
+        print("Preparing tensors for CPU inference (float32)")
     else:
-        gpu_info = get_gpu_memory_info()
-        if gpu_info and gpu_info['free_gb'] > 1.0:  
-            device = next(model.parameters()).device
+        try:
+            first_param = next(iter(model.parameters()))
+            target_device = first_param.device
+            target_dtype = first_param.dtype
+            print(f"Preparing tensors for {target_device} inference ({target_dtype})")
+        except StopIteration:
+            target_device = torch.device("cpu")
+            target_dtype = torch.float32
+            print("Fallback: preparing tensors for CPU inference")
+    
+    # Convert tensors with proper error handling
+    converted_inputs = {}
+    for key, tensor in inputs.items():
+        if isinstance(tensor, torch.Tensor):
+            try:
+                # Move to target device
+                tensor = tensor.to(target_device)
+                
+                # Convert dtype for specific tensor types
+                if key == "pixel_values" or tensor.dtype.is_floating_point:
+                    tensor = tensor.to(target_dtype)
+                
+                converted_inputs[key] = tensor
+                print(f"  {key}: {tensor.shape} → {target_device} ({tensor.dtype})")
+                
+            except Exception as e:
+                print(f"Error converting {key}: {e}")
+                # Emergency fallback to CPU
+                converted_inputs[key] = tensor.to("cpu").to(torch.float32 if tensor.dtype.is_floating_point else tensor.dtype)
         else:
-            print("Low GPU memory, keeping inputs on CPU")
-            device = "cpu"
+            converted_inputs[key] = tensor
     
-    for k, v in inputs.items():
-        if isinstance(v, torch.Tensor):
-            inputs[k] = v.to(device)
-            if k == "pixel_values" and not _model_on_cpu:
-                inputs[k] = inputs[k].to(model.dtype)
-    
-    return inputs
+    return converted_inputs
 
 def analyze_shot(
     video_path: str,
     start_time: float,
     end_time: float,
-    fps: float = 0.5,
-    max_frames: int = 16,
-    retry_on_oom: bool = True,
+    fps: float = 0.25,  # Conservative default
+    max_frames: int = 6,  # Conservative default
+    retry_on_error: bool = True,
+    force_cpu: bool = False,
 ) -> str:
-    print(f"Analyzing shot {start_time:.1f}s-{end_time:.1f}s")
     
+    duration = end_time - start_time
+    print(f"\nAnalyzing shot: {start_time:.1f}s → {end_time:.1f}s ({duration:.1f}s duration)")
+    
+    # Pre-flight memory check
     gpu_info = get_gpu_memory_info()
     if gpu_info:
-        print(f"GPU mem before: {gpu_info['reserved_gb']*1024:.1f} MB ({gpu_info['free_gb']:.1f}GB free)")
+        print(f"GPU memory before: {gpu_info['free_gb']:.2f}GB free")
     
-    force_cpu = False
-    if gpu_info and gpu_info['free_gb'] < 2.0:  
-        print("Low GPU memory detected, will try CPU inference")
-        force_cpu = True
-    
+    # Load model with appropriate configuration
     try:
         model, processor = _load_model_once(force_cpu=force_cpu)
     except Exception as e:
-        return f"Failed to load model: {str(e)}"
+        return f"Model loading failed: {str(e)}"
 
+    # Prepare conversation
     conversation = [
-        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "system", "content": "You are a helpful video analysis assistant."},
         {
-            "role": "user",
+            "role": "user", 
             "content": [
                 {
                     "type": "video",
@@ -182,8 +218,7 @@ def analyze_shot(
                 },
                 {
                     "type": "text",
-                    "text": f"Describe this segment from {start_time:.1f}s to {end_time:.1f}s in detail. "
-                            f"List salient actions, scene, people, emotions, and on-screen text if any.",
+                    "text": f"Analyze this {duration:.1f}s video segment. Describe the key visual elements, actions, setting, and any visible text or objects. Be concise but thorough.",
                 },
             ],
         },
@@ -193,187 +228,277 @@ def analyze_shot(
     output_ids = None
     
     try:
+        print("📹 Processing video segment...")
+        
+        # Process inputs
         inputs = processor(
             conversation=conversation,
             return_tensors="pt",
             add_system_prompt=True,
             add_generation_prompt=True,
         )
-
-        inputs = smart_tensor_placement(inputs, model, prefer_gpu=not force_cpu)
-
-        gpu_info = get_gpu_memory_info()
-        if gpu_info:
-            print(f"GPU mem after preprocessing: {gpu_info['reserved_gb']*1024:.1f} MB")
-
-        generation_kwargs = {
-            "max_new_tokens": 256,
-            "do_sample": False,
+        
+        # Final memory check before inference
+        if not force_cpu and not _model_on_cpu:
+            gpu_info = get_gpu_memory_info()
+            if gpu_info and gpu_info['free_gb'] < 2.5:
+                print(f"Low GPU memory ({gpu_info['free_gb']:.1f}GB), switching to CPU for this inference")
+                # Unload GPU model and reload on CPU
+                force_unload_all_models()
+                model, processor = _load_model_once(force_cpu=True)
+        
+        # Prepare tensors with correct placement and dtypes
+        inputs = smart_tensor_preparation(inputs, model, target_cpu=(force_cpu or _model_on_cpu))
+        
+        # Optimized generation parameters
+        generation_config = {
+            "max_new_tokens": 60 if (_model_on_cpu or force_cpu) else 80,
+            "do_sample": False,  # Greedy decoding for memory efficiency
             "pad_token_id": processor.tokenizer.eos_token_id,
-            "use_cache": False,
+            "eos_token_id": processor.tokenizer.eos_token_id,
+            "use_cache": False,  # Disable KV cache to save memory
+            "output_attentions": False,
+            "output_hidden_states": False,
+            "return_dict_in_generate": False,
         }
         
-        if _model_on_cpu:
-            generation_kwargs["max_new_tokens"] = 128 
-
+        print(f"Starting inference ({'CPU' if (_model_on_cpu or force_cpu) else 'GPU'} mode)...")
+        
+        # Clear cache before generation
+        if not (_model_on_cpu or force_cpu):
+            torch.cuda.empty_cache()
+        
         with torch.inference_mode():
-            output_ids = model.generate(**inputs, **generation_kwargs)
-
-        result = processor.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
-        print(f"Analysis result length: {len(result)} chars ({'CPU' if _model_on_cpu else 'GPU'} inference)")
+            with torch.no_grad():  # Extra memory protection
+                output_ids = model.generate(**inputs, **generation_config)
+        
+        # Decode result
+        generated_text = processor.batch_decode(output_ids, skip_special_tokens=True)[0]
+        
+        # Extract just the assistant's response (remove the conversation context)
+        if "assistant" in generated_text.lower():
+            result = generated_text.split("assistant")[-1].strip()
+        else:
+            result = generated_text.strip()
+        
+        # Clean up result
+        result = result.replace("</s>", "").strip()
+        
+        print(f"Analysis complete: {len(result)} characters")
+        return result if result else "No analysis generated"
         
     except torch.cuda.OutOfMemoryError as e:
-        print(f"CUDA OOM error: {e}")
+        print(f"CUDA OOM: {e}")
         
+        # Immediate cleanup
         if inputs is not None:
             del inputs
         if output_ids is not None:
             del output_ids
         aggressive_cleanup()
         
-        if retry_on_oom and not force_cpu:
-            print("Attempting recovery with CPU inference...")
+        # Retry with CPU if not already tried
+        if retry_on_error and not (force_cpu or _model_on_cpu):
+            print("Retrying with CPU mode...")
             return analyze_shot(
-                video_path, start_time, end_time, 
-                fps=max(0.25, fps/2), max_frames=max(8, max_frames//2), 
-                retry_on_oom=False
+                video_path, start_time, end_time,
+                fps=0.2, max_frames=4, retry_on_error=False, force_cpu=True
             )
         else:
-            return "OOM error – could not recover"
-    
+            return f"Memory error: Segment too large for available resources"
+            
+    except RuntimeError as e:
+        error_msg = str(e).lower()
+        if "input type" in error_msg and "weight type" in error_msg:
+            print(f"Dtype mismatch: {e}")
+            if retry_on_error and not force_cpu:
+                print("Retrying with CPU mode to resolve dtype issue...")
+                return analyze_shot(
+                    video_path, start_time, end_time,
+                    fps=fps, max_frames=max_frames, retry_on_error=False, force_cpu=True
+                )
+        print(f"Runtime error: {e}")
+        return f"Runtime error: {str(e)}"
+        
     except Exception as e:
-        print(f"Other error during analysis: {e}")
-        result = f"Analysis error: {str(e)}"
-    
+        print(f"Unexpected error: {e}")
+        import traceback
+        traceback.print_exc()
+        return f"Analysis failed: {str(e)}"
+        
     finally:
+        # Comprehensive cleanup
         if inputs is not None:
             del inputs
         if output_ids is not None:
             del output_ids
-        aggressive_cleanup()
-        
-    gpu_info = get_gpu_memory_info()
-    if gpu_info:
-        print(f"GPU mem after cleanup: {gpu_info['reserved_gb']*1024:.1f} MB")
-    
-    return result
+        gc.collect()
+        if torch.cuda.is_available() and not (_model_on_cpu or force_cpu):
+            torch.cuda.empty_cache()
 
-def check_segment_memory_requirements(duration: float, fps: float, max_frames: int) -> dict:
-    """Estimate memory requirements for a video segment"""
-    actual_frames = min(int(duration * fps), max_frames)
+def intelligent_segment_processing(video_path: str, start_time: float, end_time: float) -> str:
+    """Intelligent processing with automatic parameter optimization"""
     
-    frame_size_mb = 3.0 
-    processing_overhead = 2.0  
-    
-    estimated_mb = actual_frames * frame_size_mb * processing_overhead
-    
-    return {
-        'frames': actual_frames,
-        'estimated_mb': estimated_mb,
-        'estimated_gb': estimated_mb / 1024,
-        'duration': duration
-    }
-
-def adaptive_segment_processing(video_path: str, start_time: float, end_time: float, 
-                              base_fps: float = 0.5, base_max_frames: int = 16) -> str:
-    """Process segment with adaptive parameters based on memory"""
     duration = end_time - start_time
-    
-    memory_req = check_segment_memory_requirements(duration, base_fps, base_max_frames)
     gpu_info = get_gpu_memory_info()
     
-    print(f"Segment {start_time:.1f}s-{end_time:.1f}s: {memory_req['frames']} frames, "
-          f"~{memory_req['estimated_gb']:.1f}GB estimated")
+    # Determine optimal parameters based on duration and available memory
+    if duration <= 15:
+        fps, max_frames = 0.4, 8  # High quality for short segments
+    elif duration <= 45:
+        fps, max_frames = 0.3, 6  # Balanced
+    elif duration <= 90:
+        fps, max_frames = 0.25, 4  # Conservative
+    else:
+        fps, max_frames = 0.2, 3   # Very conservative for long segments
     
-    fps = base_fps
-    max_frames = base_max_frames
+    # Adjust based on available GPU memory
+    force_cpu = False
+    if gpu_info:
+        if gpu_info['free_gb'] < 6.0:
+            force_cpu = True
+            print(f"GPU memory limited ({gpu_info['free_gb']:.1f}GB), using CPU mode")
+        elif gpu_info['free_gb'] < 8.0:
+            fps = min(fps, 0.2)
+            max_frames = min(max_frames, 4)
+            print(f"Reducing parameters due to memory constraints")
     
-    if gpu_info and memory_req['estimated_gb'] > gpu_info['free_gb']:
-        print("Reducing parameters due to memory constraints")
-        fps = min(fps, 0.25)
-        max_frames = min(max_frames, 8)
+    print(f"Processing {duration:.1f}s segment: {fps} fps, {max_frames} max frames")
+    
+    # Handle very long segments by splitting
+    if duration > 120:
+        print(f"Splitting long segment ({duration:.1f}s)")
+        mid_point = start_time + duration / 2
         
-        if duration > 120:  
-            print(f"Splitting long segment ({duration:.1f}s) into chunks")
-            mid_point = start_time + duration / 2
-            
-            result1 = analyze_shot(video_path, start_time, mid_point, fps, max_frames//2)
-            result2 = analyze_shot(video_path, mid_point, end_time, fps, max_frames//2)
-            
-            return f"{result1} {result2}".strip()
+        part1 = analyze_shot(video_path, start_time, mid_point, fps=0.2, max_frames=3, force_cpu=force_cpu)
+        # Cleanup between parts
+        aggressive_cleanup()
+        part2 = analyze_shot(video_path, mid_point, end_time, fps=0.2, max_frames=3, force_cpu=force_cpu)
+        
+        # Combine results intelligently
+        return f"First half: {part1.strip()} Second half: {part2.strip()}"
     
-    return analyze_shot(video_path, start_time, end_time, fps, max_frames)
+    return analyze_shot(video_path, start_time, end_time, fps, max_frames, force_cpu=force_cpu)
 
-def run_video_analysis(db, video, per_shot: bool = True):
+def run_video_analysis(db, video, per_shot: bool = True, prefer_gpu: bool = True):
     """
-    VideoLLaMA3 analysis with adaptive memory management
+    Production video analysis optimized for RTX 5080 + Ryzen 9 9950X + 64GB RAM
+    
+    Args:
+        db: Database session
+        video: Video object with shots
+        per_shot: Whether to analyze per shot or full video
+        prefer_gpu: Whether to prefer GPU over CPU (will fallback automatically)
     """
+    
+    print(f"Starting VideoLLaMA3 analysis for video ID: {video.id}")
+    print(f"ystem specs: RTX 5080 16GB | Ryzen 9 9950X | 64GB RAM")
+    
+    # System status
+    ram_info = psutil.virtual_memory()
+    gpu_info = get_gpu_memory_info()
+    
+    print(f"RAM: {ram_info.available / 1024**3:.1f}GB available / {ram_info.total / 1024**3:.1f}GB total")
+    if gpu_info:
+        print(f"GPU: {gpu_info['free_gb']:.1f}GB free / {gpu_info['total_gb']:.1f}GB total")
+    
+    # Initial cleanup
+    force_unload_all_models()
+    
     shot_count = 0
     error_count = 0
-    
-    print(f"Starting analysis for video ID: {video.id}")
-    print(f"Available RAM: {psutil.virtual_memory().available / 1024**3:.1f}GB")
-    
-    gpu_info = get_gpu_memory_info()
-    if gpu_info:
-        print(f"GPU memory: {gpu_info['free_gb']:.1f}GB free / {gpu_info['total_gb']:.1f}GB total")
+    total_shots = len(video.shots) if per_shot else 1
     
     try:
         if per_shot:
-            shots = video.shots
-            total_shots = len(shots)
-            print(f"Found {total_shots} shots for video")
+            print(f"📋 Processing {total_shots} shots individually")
             
-            for i, shot in enumerate(shots):
-                print(f"Processing shot {i+1}/{total_shots} (Shot ID: {shot.id})")
+            for i, shot in enumerate(video.shots):
+                print(f"\n{'='*60}")
+                print(f"Shot {i+1}/{total_shots} (ID: {shot.id})")
+                print(f"Duration: {shot.start_time:.1f}s → {shot.end_time:.1f}s ({shot.end_time - shot.start_time:.1f}s)")
                 
-                if shot.analysis and shot.analysis.strip() and not shot.analysis.startswith("Analysis error"):
-                    print(f"Shot {i+1} already has analysis, skipping...")
+                # Skip if already analyzed
+                if (shot.analysis and shot.analysis.strip() and 
+                    not any(error in shot.analysis for error in ["Analysis error", "Failed to load", "OOM error", "Processing error", "Memory error", "Runtime error"])):
+                    print(f"✅ Shot {i+1} already analyzed, skipping")
                     continue
                 
                 try:
-                    analysis_result = adaptive_segment_processing(
+                    # Memory status check
+                    current_gpu = get_gpu_memory_info()
+                    if current_gpu:
+                        print(f"Pre-analysis GPU: {current_gpu['free_gb']:.2f}GB free")
+                    
+                    # Process with intelligent parameter selection
+                    analysis_result = intelligent_segment_processing(
                         video.file_path, shot.start_time, shot.end_time
                     )
                     
-                    print(f"Got analysis result: '{analysis_result[:100]}...' (length: {len(analysis_result)})")
+                    # Validate result
+                    if analysis_result and len(analysis_result.strip()) > 10:
+                        shot.analysis = analysis_result.strip()
+                        shot_count += 1
+                        print(f"Success: '{analysis_result[:60]}...'")
+                    else:
+                        shot.analysis = "Analysis produced empty or invalid result"
+                        error_count += 1
+                        print(f"Empty result for shot {i+1}")
                     
-                    shot.analysis = analysis_result
                     db.add(shot)
-                    shot_count += 1
                     
+                    # Commit every 3 successful analyses
                     if shot_count % 3 == 0:
-                        print(f"Committing after {shot_count} shots...")
-                        try:
-                            db.commit()
-                            print("Commit successful")
-                        except Exception as e:
-                            print(f"Commit failed: {e}")
-                            db.rollback()
-                            raise
+                        print("Saving progress...")
+                        db.commit()
                         
                 except Exception as e:
-                    print(f"Error processing shot {shot.shot_index}: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    
-                    shot.analysis = f"Processing error: {str(e)}"
+                    print(f"Error processing shot {i+1}: {e}")
+                    shot.analysis = f"Processing failed: {str(e)[:100]}"
                     db.add(shot)
                     error_count += 1
                 
-                if (shot_count + error_count) % 20 == 0:
-                    print("Performing periodic cleanup...")
+                # Cleanup between shots
+                if (shot_count + error_count) % 2 == 0:
+                    print("🧹 Periodic cleanup...")
                     aggressive_cleanup()
         
-        print("Performing final commit...")
+        # Final commit
+        print("\n💾 Final save...")
         db.commit()
-        print(f"Analysis complete. Processed: {shot_count}, Errors: {error_count}")
+        
+        # Results summary
+        print(f"\nAnalysis Complete!")
+        print(f"Successful: {shot_count}")
+        print(f"Errors: {error_count}")
+        print(f"Success rate: {shot_count/(shot_count+error_count)*100:.1f}%")
+        
+        if error_count > 0:
+            print(f"Tip: Consider running with force_cpu=True for problematic segments")
         
     except Exception as e:
-        print(f"Critical error: {e}")
+        print(f"Critical error in analysis pipeline: {e}")
         import traceback
         traceback.print_exc()
         db.rollback()
         raise
+        
     finally:
-        pass
+        print("🧹 Final cleanup...")
+        force_unload_all_models()
+
+def unload_model():
+    """Public interface for model cleanup"""
+    force_unload_all_models()
+    print("Model unloaded")
+
+# Utility functions for manual control
+def force_cpu_analysis(db, video):
+    """Force CPU-only analysis for maximum stability"""
+    print("Running in CPU-only mode for maximum stability")
+    return run_video_analysis(db, video, per_shot=True, prefer_gpu=False)
+
+def gpu_analysis_with_fallback(db, video):
+    """GPU analysis with intelligent CPU fallback"""
+    print("Running with GPU preference and automatic CPU fallback")
+    return run_video_analysis(db, video, per_shot=True, prefer_gpu=True)

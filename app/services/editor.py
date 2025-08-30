@@ -2,238 +2,792 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import time
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Union
+from dataclasses import dataclass, field
+from enum import Enum
+from abc import ABC, abstractmethod
 
 from sqlalchemy.orm import Session
 from ollama import Client
 
 from app import models
-from app.schemas import EditorAgentResponse, TimelinePlan, Storyboard
+from app.schemas import EditorAgentResponse, TimelinePlan, Storyboard, TimelineItem
 
-OLLAMA_MODEL = "llama3.1:8b-instruct"
+# Configuration
+OLLAMA_MODEL = "llama3.1:8b"
 OLLAMA_HOST = "http://127.0.0.1:11434"
-OLLAMA_TIMEOUT_S = 120
-OLLAMA_RETRIES = 2
-TEMPERATURE = 0.35
+OLLAMA_TIMEOUT_S = 180
+OLLAMA_RETRIES = 3
+TEMPERATURE = 0.25
+
+# Video constraints by platform
+PLATFORM_LIMITS = {
+    "youtube_shorts": {"max_duration": 59.0, "ideal_clips": 6, "max_clip_duration": 8.0},
+    "tiktok": {"max_duration": 59.0, "ideal_clips": 7, "max_clip_duration": 7.0},
+    "instagram_reels": {"max_duration": 59.0, "ideal_clips": 6, "max_clip_duration": 8.0},
+    "custom": {"max_duration": 300.0, "ideal_clips": 20, "max_clip_duration": 15.0}
+}
 
 logger = logging.getLogger(__name__)
 client = Client(host=OLLAMA_HOST)
 
 
-def _gather_context(db: Session, video_id: int) -> Dict[str, Any]:
-    video = db.query(models.Video).filter(models.Video.id == video_id).first()
-    if not video:
-        raise ValueError("Video not found")
-
-    shots = (
-        db.query(models.Shot)
-        .filter(models.Shot.video_id == video_id)
-        .order_by(models.Shot.shot_index.asc())
-        .all()
-    )
-    if not shots:
-        raise ValueError("No shots found for video. Run shot detection first.")
-
-    context = {
-        "video": {"id": video.id, "file_path": video.file_path},
-        "shots": [
-            {
-                "clip_id": s.id,
-                "shot_index": s.shot_index,
-                "start_time": float(s.start_time or 0.0),
-                "end_time": float(s.end_time or 0.0),
-                "duration": max(0.0, float((s.end_time or 0) - (s.start_time or 0))),
-                "transcript": (s.transcript or "")[:6000],
-                "analysis": (s.analysis or "")[:4000],
-            }
-            for s in shots
-        ],
-    }
-    return context
+class ContentType(Enum):
+    """Supported content types for different use cases"""
+    PODCAST_HIGHLIGHTS = "podcast_highlights"
+    INTERVIEW_CLIPS = "interview_clips"
+    EDUCATIONAL_SUMMARY = "educational_summary"
+    ENTERTAINMENT_COMPILATION = "entertainment_compilation"
+    PRODUCT_DEMO = "product_demo"
+    TESTIMONIAL_REEL = "testimonial_reel"
+    EVENT_HIGHLIGHTS = "event_highlights"
 
 
-def _build_prompt(context: Dict[str, Any], user_brief: Optional[str]) -> str:
-    def fmt_shot(sh: Dict[str, Any]) -> str:
-        return (
-            f"- Clip {sh['clip_id']} "
-            f"[{sh['start_time']:.2f}s–{sh['end_time']:.2f}s | dur {sh['duration']:.2f}s]\n"
-            f"  transcript: {sh['transcript']}\n"
-            f"  analysis: {sh['analysis']}\n"
-        )
-
-    shots_txt = "\n".join(fmt_shot(sh) for sh in context["shots"])
-    brief_txt = (user_brief or "").strip() or "Platform: YouTube Shorts/TikTok. Goal: maximize hook & retention."
-
-    schema_hint = {
-        "storyboard": {
-            "theme": "string",
-            "beats": [
-                {"order": 1, "title": "string", "summary": "string", "supporting_clips": [0, 1]}
-            ],
-        },
-        "timeline": {
-            "items": [
-                {
-                    "clip_id": 0,
-                    "order": 1,
-                    "start_time": 0.0,    
-                    "end_time": 0.0,       
-                    "highlight_reason": "string"
-                }
-            ]
-        },
-    }
-
-    return f"""
-You are a senior viral short-form video editor.
-
-TASK:
-- Re-order clips based on transcripts/analysis to maximize retention.
-- Hard cut boring parts; keep only the most interesting/viral segments.
-- Ensure a strong hook in the first 2–4 seconds.
-
-CONSTRAINTS:
-- Output VALID JSON ONLY (no markdown, no commentary).
-- Conform to this key structure: {json.dumps(schema_hint)}
-- If unsure, make a best-effort guess; do not leave fields null.
-
-USER_BRIEF:
-{brief_txt}
-
-CLIPS:
-{shots_txt}
-
-Return a single JSON object with keys "storyboard" and "timeline".
-"""
+class TransitionType(Enum):
+    """Professional video transitions"""
+    HARD_CUT = "hard_cut"
+    FADE = "fade"
+    SLIDE = "slide"
+    ZOOM = "zoom"
 
 
-def _extract_first_json_blob(text: str) -> Optional[str]:
-    """Extract first JSON object/array from raw text."""
-    m = re.search(r"(\{.*\}|\[.*\])", text, flags=re.DOTALL)
-    return m.group(1) if m else None
+@dataclass
+class VideoClip:
+    """Clean video clip representation"""
+    id: int
+    source_path: str
+    start_time: float
+    end_time: float
+    content_score: float = 0.0
+    transcript: str = ""
+    summary: str = ""
+    tags: List[str] = field(default_factory=list)
+    
+    @property
+    def duration(self) -> float:
+        return max(0.0, self.end_time - self.start_time)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "source_path": self.source_path,
+            "start_time": self.start_time,
+            "end_time": self.end_time,
+            "duration": self.duration,
+            "content_score": self.content_score,
+            "transcript": self.transcript,
+            "summary": self.summary,
+            "tags": self.tags
+        }
 
 
-def _call_ollama_json(prompt: str) -> Dict[str, Any]:
-    last_err = None
-    for attempt in range(OLLAMA_RETRIES + 1):
-        try:
-            res = client.chat(
-                model=OLLAMA_MODEL,
-                messages=[
-                    {"role": "system", "content": "Respond with strict JSON that validates."},
-                    {"role": "user", "content": prompt},
-                ],
-                options={"temperature": TEMPERATURE, "num_ctx": 8192},
-                format="json",
-            )
-            raw = (res or {}).get("message", {}).get("content", "")
-            try:
-                return json.loads(raw)
-            except Exception:
-                blob = _extract_first_json_blob(raw)
-                if blob:
-                    return json.loads(blob)
-                raise ValueError("Model did not return valid JSON.")
-        except Exception as e:
-            last_err = e
-            logger.warning("Ollama JSON call failed (attempt %s/%s): %s",
-                           attempt + 1, OLLAMA_RETRIES + 1, e)
-            if attempt < OLLAMA_RETRIES:
-                time.sleep(1.0 + attempt * 0.5)
-    raise RuntimeError(f"Ollama call ultimately failed: {last_err}")
-
-
-def _postprocess_timeline_items(db: Session, video_id: int, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Harden timeline items from the LLM:
-    - Filter to valid Shot IDs for this video
-    - Coerce types and bounds (times)
-    - Ensure stable, unique ordering
-    """
-    valid_shots = {
-        s.id: (float(s.start_time or 0.0), float(s.end_time or 0.0))
-        for s in db.query(models.Shot).filter(models.Shot.video_id == video_id).all()
-    }
-
-    cleaned: List[Dict[str, Any]] = []
-    seen_orders = set()
-    next_order = 1
-
-    for it in items or []:
-        cid = it.get("clip_id")
-        if cid not in valid_shots:
-            continue
-
-        default_start, default_end = valid_shots[cid]
-        st = float(it.get("start_time", default_start))
-        en = float(it.get("end_time", default_end))
-        if en <= st:
-            en = max(st + 0.25, default_end)
-
-        order = int(it.get("order") or 0)
-        if order <= 0 or order in seen_orders:
-            order = next_order
-        seen_orders.add(order)
-        next_order = order + 1
-
-        cleaned.append({
-            "clip_id": cid,
-            "order": order,
-            "start_time": st,
-            "end_time": en,
-            "highlight_reason": (it.get("highlight_reason") or "").strip()[:256],
+@dataclass
+class EditingProject:
+    """Project container for multi-video editing"""
+    id: int
+    name: str
+    content_type: ContentType
+    target_platform: str
+    source_videos: List[Dict[str, Any]] = field(default_factory=list)
+    clips: List[VideoClip] = field(default_factory=list)
+    brief: Optional[str] = None
+    
+    def add_source_video(self, video_id: int, video_path: str, priority: int = 1) -> None:
+        """Add source video to project"""
+        self.source_videos.append({
+            "id": video_id,
+            "path": video_path,
+            "priority": priority
         })
+    
+    def get_platform_limits(self) -> Dict[str, float]:
+        """Get platform-specific limits"""
+        return PLATFORM_LIMITS.get(self.target_platform, PLATFORM_LIMITS["custom"])
 
-    cleaned.sort(key=lambda x: x["order"])
-    return cleaned
+
+class ContentAnalyzer(ABC):
+    """Base class for content analysis strategies"""
+    
+    @abstractmethod
+    def calculate_content_score(self, clip: VideoClip) -> float:
+        """Calculate content relevance score (0-10)"""
+        pass
+    
+    @abstractmethod
+    def get_selection_criteria(self) -> Dict[str, Any]:
+        """Get criteria for clip selection"""
+        pass
 
 
-def run_editor_agent(db: Session, video_id: int, user_brief: Optional[str] = None) -> EditorAgentResponse:
-    ctx = _gather_context(db, video_id)
-    prompt = _build_prompt(ctx, user_brief)
-    raw = _call_ollama_json(prompt)
+class PodcastHighlightsAnalyzer(ContentAnalyzer):
+    """Analyzer for podcast/interview highlights"""
+    
+    def calculate_content_score(self, clip: VideoClip) -> float:
+        content = f"{clip.transcript} {clip.summary}".lower()
+        
+        # Key moments indicators
+        highlight_keywords = [
+            "key point", "important", "crucial", "essential", "main",
+            "breakthrough", "discovery", "insight", "revelation",
+            "strategy", "tip", "advice", "lesson", "mistake",
+            "story", "example", "experience", "case study",
+            "question", "answer", "explain", "clarify"
+        ]
+        
+        score = 0.0
+        for keyword in highlight_keywords:
+            if keyword in content:
+                score += 0.8
+        
+        # Engagement indicators
+        if any(marker in content for marker in ["laugh", "surprise", "wow", "amazing"]):
+            score += 1.0
+        
+        # Question/answer format
+        if "?" in content or any(q in content for q in ["what", "how", "why", "when"]):
+            score += 0.5
+        
+        return min(10.0, score)
+    
+    def get_selection_criteria(self) -> Dict[str, Any]:
+        return {
+            "min_score": 2.0,
+            "prefer_dialogue": True,
+            "maintain_context": True,
+            "ideal_clip_length": 5.0
+        }
 
-    if not isinstance(raw, dict) or "timeline" not in raw:
-        raise ValueError("Model response missing 'timeline' key.")
 
-    timeline_part = raw.get("timeline")
-    storyboard_part = raw.get("storyboard")
+class ViralContentAnalyzer(ContentAnalyzer):
+    """Analyzer for viral social media content"""
+    
+    def calculate_content_score(self, clip: VideoClip) -> float:
+        content = f"{clip.transcript} {clip.summary}".lower()
+        
+        viral_indicators = [
+            "shocking", "unbelievable", "secret", "truth", "exposed",
+            "amazing", "incredible", "transformation", "before after",
+            "you won't believe", "wait for it", "plot twist",
+            "breaking", "exclusive", "reaction", "drama"
+        ]
+        
+        score = 0.0
+        for indicator in viral_indicators:
+            if indicator in content:
+                score += 1.2
+        
+        # Hook potential (first 3 seconds)
+        if any(hook in content for hook in ["wait", "stop", "look", "imagine"]):
+            score += 2.0
+        
+        return min(10.0, score)
+    
+    def get_selection_criteria(self) -> Dict[str, Any]:
+        return {
+            "min_score": 3.0,
+            "prefer_hooks": True,
+            "maintain_context": False,
+            "ideal_clip_length": 3.0
+        }
 
-    try:
-        timeline_model = TimelinePlan.model_validate(timeline_part)
-    except Exception as e:
-        logger.error("Timeline validation failed: %s", e)
-        raise
 
-    items_clean = _postprocess_timeline_items(db, video_id, timeline_model.items)
-    timeline_model.items = items_clean  
+class EditorEngine:
+    """Core editing engine with clean architecture"""
+    
+    def __init__(self, content_analyzer: ContentAnalyzer):
+        self.analyzer = content_analyzer
+        self.clips: List[VideoClip] = []
+        self.selected_clips: List[VideoClip] = []
+    
+    def load_clips_from_shots(self, shots: List[Any], video_path: str) -> None:
+        """Load clips from database shots"""
+        self.clips = []
+        
+        for shot in shots:
+            clip = VideoClip(
+                id=shot.id,
+                source_path=video_path,
+                start_time=float(shot.start_time or 0.0),
+                end_time=float(shot.end_time or 0.0),
+                transcript=shot.transcript or "",
+                summary=shot.analysis or ""
+            )
+            clip.content_score = self.analyzer.calculate_content_score(clip)
+            self.clips.append(clip)
+    
+    def load_clips_from_multiple_videos(self, video_shots_map: Dict[str, List[Any]]) -> None:
+        """Load clips from multiple source videos"""
+        self.clips = []
+        
+        for video_path, shots in video_shots_map.items():
+            for shot in shots:
+                clip = VideoClip(
+                    id=shot.id,
+                    source_path=video_path,
+                    start_time=float(shot.start_time or 0.0),
+                    end_time=float(shot.end_time or 0.0),
+                    transcript=shot.transcript or "",
+                    summary=shot.analysis or ""
+                )
+                clip.content_score = self.analyzer.calculate_content_score(clip)
+                self.clips.append(clip)
+    
+    def select_best_clips(self, target_duration: float, max_clips: int) -> List[VideoClip]:
+        """Select best clips while maintaining narrative flow"""
+        criteria = self.analyzer.get_selection_criteria()
+        min_score = criteria.get("min_score", 2.0)
+        maintain_context = criteria.get("maintain_context", True)
+        
+        # Filter by minimum quality
+        candidates = [c for c in self.clips if c.content_score >= min_score]
+        
+        if maintain_context:
+            # Sort by original order to maintain narrative flow
+            candidates.sort(key=lambda c: (c.source_path, c.start_time))
+        else:
+            # Sort by content score for maximum impact
+            candidates.sort(key=lambda c: c.content_score, reverse=True)
+        
+        # Select clips within duration and count limits
+        selected = []
+        total_duration = 0.0
+        
+        for clip in candidates:
+            if len(selected) >= max_clips:
+                break
+            
+            if total_duration + clip.duration <= target_duration:
+                selected.append(clip)
+                total_duration += clip.duration
+            elif target_duration - total_duration > 0.5:  # Minimum viable clip
+                # Trim clip to fit remaining time
+                remaining_time = target_duration - total_duration
+                trimmed_clip = VideoClip(
+                    id=clip.id,
+                    source_path=clip.source_path,
+                    start_time=clip.start_time,
+                    end_time=clip.start_time + remaining_time,
+                    content_score=clip.content_score,
+                    transcript=clip.transcript,
+                    summary=clip.summary,
+                    tags=clip.tags + ["trimmed"]
+                )
+                selected.append(trimmed_clip)
+                break
+        
+        self.selected_clips = selected
+        return selected
+    
+    def generate_timeline(self) -> Dict[str, Any]:
+        """Generate clean timeline structure"""
+        items = []
+        
+        for i, clip in enumerate(self.selected_clips):
+            items.append({
+                "clip_id": clip.id,
+                "order": i + 1,
+                "start_time": clip.start_time,
+                "end_time": clip.end_time,
+                "source_path": clip.source_path,
+                "highlight_reason": f"Score: {clip.content_score:.1f}",
+                "transition_type": TransitionType.HARD_CUT.value
+            })
+        
+        total_duration = sum(clip.duration for clip in self.selected_clips)
+        
+        return {
+            "total_duration": total_duration,
+            "clip_count": len(self.selected_clips),
+            "items": items
+        }
 
-    storyboard_model = None
-    if storyboard_part:
+
+class PromptTemplateManager:
+    """Manages prompts for different content types"""
+    
+    @staticmethod
+    def get_base_prompt() -> str:
+        return """
+You are a professional video editor AI creating engaging short-form content.
+
+CORE PRINCIPLES:
+1. Maintain narrative coherence and logical flow
+2. Select the most engaging and valuable moments
+3. Respect platform duration limits
+4. Create content that provides genuine value to viewers
+5. Ensure smooth transitions between clips
+
+QUALITY STANDARDS:
+- Each clip must serve a purpose in the overall narrative
+- Maintain consistent pacing throughout the video
+- Ensure clear audio and visual quality
+- Create compelling hooks while staying authentic
+- End with strong calls-to-action or memorable moments
+"""
+    
+    @staticmethod
+    def get_content_specific_prompt(content_type: ContentType) -> str:
+        prompts = {
+            ContentType.PODCAST_HIGHLIGHTS: """
+PODCAST HIGHLIGHTS STRATEGY:
+- Focus on key insights, memorable quotes, and valuable advice
+- Maintain conversational flow between clips
+- Include context for better understanding
+- Highlight unique perspectives or surprising revelations
+- Keep speaker identity clear throughout
+""",
+            ContentType.INTERVIEW_CLIPS: """
+INTERVIEW CLIPS STRATEGY:
+- Capture the most insightful questions and answers
+- Show dynamic between interviewer and guest
+- Include moments that reveal personality or expertise
+- Maintain professional tone while being engaging
+- Focus on actionable insights and key takeaways
+""",
+            ContentType.EDUCATIONAL_SUMMARY: """
+EDUCATIONAL CONTENT STRATEGY:
+- Break down complex topics into digestible segments
+- Maintain logical learning progression
+- Include clear explanations and examples
+- Ensure each clip builds on the previous one
+- End with actionable next steps or key principles
+"""
+        }
+        return prompts.get(content_type, prompts[ContentType.PODCAST_HIGHLIGHTS])
+
+
+class LLMService:
+    """Service for LLM interactions with improved error handling"""
+    
+    def __init__(self, client: Client):
+        self.client = client
+    
+    def generate_edit_plan(self, 
+                          clips: List[VideoClip], 
+                          project: EditingProject) -> Dict[str, Any]:
+        """Generate editing plan using LLM"""
+        
+        prompt = self._build_editing_prompt(clips, project)
+        
+        for attempt in range(OLLAMA_RETRIES + 1):
+            try:
+                response = self.client.chat(
+                    model=OLLAMA_MODEL,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": self._get_system_prompt(project.content_type)
+                        },
+                        {"role": "user", "content": prompt}
+                    ],
+                    options={
+                        "temperature": TEMPERATURE,
+                        "num_ctx": 8192,
+                        "top_p": 0.9,
+                        "repeat_penalty": 1.1
+                    },
+                    format="json"
+                )
+                
+                raw_content = response.get("message", {}).get("content", "")
+                return self._parse_llm_response(raw_content)
+                
+            except Exception as e:
+                logger.warning(f"LLM call failed (attempt {attempt + 1}): {e}")
+                if attempt < OLLAMA_RETRIES:
+                    time.sleep(1.0 + attempt)
+                else:
+                    raise RuntimeError(f"LLM service failed after {OLLAMA_RETRIES} retries: {e}")
+    
+    def _get_system_prompt(self, content_type: ContentType) -> str:
+        """Get system prompt based on content type"""
+        base = PromptTemplateManager.get_base_prompt()
+        specific = PromptTemplateManager.get_content_specific_prompt(content_type)
+        return f"{base}\n\n{specific}"
+    
+    def _build_editing_prompt(self, clips: List[VideoClip], project: EditingProject) -> str:
+        """Build comprehensive editing prompt"""
+        limits = project.get_platform_limits()
+        
+        clips_summary = "\n".join([
+            f"Clip {clip.id}: {clip.start_time:.1f}s-{clip.end_time:.1f}s "
+            f"(Score: {clip.content_score:.1f}) - {clip.transcript[:100]}..."
+            for clip in clips[:20]  # Limit for context
+        ])
+        
+        schema_example = {
+            "storyboard": {
+                "theme": "content_theme",
+                "target_audience": "target_demographic", 
+                "strategy": "editing_approach",
+                "narrative_arc": "beginning_middle_end_structure",
+                "beats": [
+                    {
+                        "order": 1,
+                        "title": "Opening Hook",
+                        "summary": "clip_purpose_and_content",
+                        "supporting_clips": [1, 2],
+                        "duration_target": 5.0
+                    }
+                ]
+            },
+            "timeline": {
+                "total_duration": 45.5,
+                "items": [
+                    {
+                        "clip_id": 1,
+                        "order": 1,
+                        "start_time": 12.5,
+                        "end_time": 17.5,
+                        "highlight_reason": "strong_opening_statement",
+                        "transition_type": "hard_cut"
+                    }
+                ]
+            }
+        }
+        
+        return f"""
+PROJECT DETAILS:
+- Content Type: {project.content_type.value}
+- Platform: {project.target_platform}
+- Max Duration: {limits['max_duration']}s
+- Ideal Clips: {limits['ideal_clips']}
+- Brief: {project.brief or 'Create engaging highlight reel'}
+
+AVAILABLE CLIPS:
+{clips_summary}
+
+REQUIREMENTS:
+1. Create a coherent narrative that flows naturally
+2. Select clips that work well together
+3. Maintain chronological order when logical
+4. Ensure total duration stays under {limits['max_duration']}s
+5. Focus on highest-scoring content while maintaining flow
+
+OUTPUT FORMAT (JSON only):
+{json.dumps(schema_example, indent=2)}
+
+Return valid JSON with both 'storyboard' and 'timeline' keys.
+"""
+    
+    def _parse_llm_response(self, raw_content: str) -> Dict[str, Any]:
+        """Parse and validate LLM response"""
         try:
-            storyboard_model = Storyboard.model_validate(storyboard_part)
-        except Exception as e:
-            logger.warning("Storyboard validation failed, ignoring storyboard: %s", e)
+            # Try direct JSON parse first
+            return json.loads(raw_content)
+        except json.JSONDecodeError:
+            # Extract JSON from markdown or mixed content
+            import re
+            json_match = re.search(r'\{.*\}', raw_content, re.DOTALL)
+            if json_match:
+                return json.loads(json_match.group())
+            raise ValueError("No valid JSON found in LLM response")
 
-    video = db.query(models.Video).filter(models.Video.id == video_id).first()
-    if not video:
-        raise ValueError("Video not found (race condition).")
 
-    video.timeline_json = timeline_model.model_dump()
-    if storyboard_model:
-        video.storyboard_json = storyboard_model.model_dump()
+class VideoEditor:
+    """Main video editor with clean, extensible architecture"""
+    
+    def __init__(self, db: Session):
+        self.db = db
+        self.llm_service = LLMService(client)
+        self.analyzer_map = {
+            ContentType.PODCAST_HIGHLIGHTS: PodcastHighlightsAnalyzer(),
+            ContentType.INTERVIEW_CLIPS: PodcastHighlightsAnalyzer(),  # Similar logic
+            ContentType.EDUCATIONAL_SUMMARY: PodcastHighlightsAnalyzer(),
+            ContentType.ENTERTAINMENT_COMPILATION: ViralContentAnalyzer(),
+            ContentType.PRODUCT_DEMO: PodcastHighlightsAnalyzer(),
+            ContentType.TESTIMONIAL_REEL: PodcastHighlightsAnalyzer(),
+            ContentType.EVENT_HIGHLIGHTS: ViralContentAnalyzer()
+        }
+    
+    def create_project(self, 
+                      name: str,
+                      content_type: ContentType,
+                      target_platform: str,
+                      brief: Optional[str] = None) -> EditingProject:
+        """Create new editing project"""
+        project = EditingProject(
+            id=int(time.time()),  # Simple ID for now
+            name=name,
+            content_type=content_type,
+            target_platform=target_platform,
+            brief=brief
+        )
+        return project
+    
+    def add_video_to_project(self, project: EditingProject, video_id: int) -> None:
+        """Add video source to project"""
+        video = self.db.query(models.Video).filter(models.Video.id == video_id).first()
+        if not video:
+            raise ValueError(f"Video {video_id} not found")
+        
+        project.add_source_video(video_id, video.file_path)
+        
+        # Load shots for this video
+        shots = (
+            self.db.query(models.Shot)
+            .filter(models.Shot.video_id == video_id)
+            .order_by(models.Shot.shot_index.asc())
+            .all()
+        )
+        
+        if not shots:
+            raise ValueError(f"No shots found for video {video_id}. Run shot detection first.")
+        
+        # Convert shots to clips using appropriate analyzer
+        analyzer = self.analyzer_map.get(project.content_type, PodcastHighlightsAnalyzer())
+        
+        for shot in shots:
+            clip = VideoClip(
+                id=shot.id,
+                source_path=video.file_path,
+                start_time=float(shot.start_time or 0.0),
+                end_time=float(shot.end_time or 0.0),
+                transcript=shot.transcript or "",
+                summary=shot.analysis or ""
+            )
+            clip.content_score = analyzer.calculate_content_score(clip)
+            project.clips.append(clip)
+    
+    def generate_edit(self, project: EditingProject) -> EditorAgentResponse:
+        """Generate final edit plan"""
+        if not project.clips:
+            raise ValueError("No clips available for editing")
+        
+        # Get platform limits
+        limits = project.get_platform_limits()
+        
+        # Initialize editor engine with appropriate analyzer
+        analyzer = self.analyzer_map.get(project.content_type, PodcastHighlightsAnalyzer())
+        engine = EditorEngine(analyzer)
+        engine.clips = project.clips
+        
+        # Select best clips
+        selected_clips = engine.select_best_clips(
+            target_duration=limits["max_duration"],
+            max_clips=limits["ideal_clips"]
+        )
+        
+        if not selected_clips:
+            raise ValueError("No clips met selection criteria")
+        
+        # Generate LLM-powered edit plan
+        llm_response = self.llm_service.generate_edit_plan(selected_clips, project)
+        
+        # Validate and create timeline
+        timeline_data = llm_response.get("timeline", {})
+        storyboard_data = llm_response.get("storyboard")
+        
+        # Create timeline items
+        timeline_items = []
+        for item_data in timeline_data.get("items", []):
+            timeline_item = TimelineItem(
+                clip_id=item_data["clip_id"],
+                order=item_data["order"],
+                start_time=item_data["start_time"],
+                end_time=item_data["end_time"],
+                highlight_reason=item_data.get("highlight_reason", "Selected content")
+            )
+            timeline_items.append(timeline_item)
+        
+        # Validate total duration
+        total_duration = sum(item.end_time - item.start_time for item in timeline_items)
+        
+        timeline = TimelinePlan(
+            total_duration=total_duration,
+            items=timeline_items
+        )
+        
+        storyboard = None
+        if storyboard_data:
+            try:
+                storyboard = Storyboard.model_validate(storyboard_data)
+            except Exception as e:
+                logger.warning(f"Storyboard validation failed: {e}")
+        
+        # Save to database
+        self._save_project_results(project, timeline, storyboard)
+        
+        logger.info(f"Edit generated: {len(timeline_items)} clips, {total_duration:.1f}s duration")
+        
+        return EditorAgentResponse(
+            storyboard=storyboard,
+            timeline=timeline
+        )
+    
+    def _save_project_results(self, 
+                             project: EditingProject, 
+                             timeline: TimelinePlan, 
+                             storyboard: Optional[Storyboard]) -> None:
+        """Save project results to database"""
+        # For multi-video projects, save to the first video for now
+        # In production, you'd want a separate projects table
+        if project.source_videos:
+            video_id = project.source_videos[0]["id"]
+            video = self.db.query(models.Video).filter(models.Video.id == video_id).first()
+            
+            if video:
+                video.timeline_json = timeline.model_dump()
+                if storyboard:
+                    video.storyboard_json = storyboard.model_dump()
+                
+                self.db.add(video)
+                self.db.commit()
 
-    db.add(video)
-    db.commit()
 
-    return EditorAgentResponse(storyboard=storyboard_model, timeline=timeline_model)
+# Legacy compatibility functions
+def run_editor_agent(db: Session, video_id: int, user_brief: Optional[str] = None) -> EditorAgentResponse:
+    """Legacy function - creates single video highlight reel"""
+    editor = VideoEditor(db)
+    
+    # Determine content type from brief
+    content_type = ContentType.PODCAST_HIGHLIGHTS
+    if user_brief:
+        brief_lower = user_brief.lower()
+        if any(word in brief_lower for word in ["viral", "tiktok", "instagram"]):
+            content_type = ContentType.ENTERTAINMENT_COMPILATION
+        elif "education" in brief_lower:
+            content_type = ContentType.EDUCATIONAL_SUMMARY
+    
+    # Create project
+    project = editor.create_project(
+        name=f"Video_{video_id}_highlights",
+        content_type=content_type,
+        target_platform="youtube_shorts",
+        brief=user_brief
+    )
+    
+    # Add video to project
+    editor.add_video_to_project(project, video_id)
+    
+    # Generate edit
+    return editor.generate_edit(project)
 
 
 def get_timeline_json(db: Session, video_id: int) -> Dict[str, Any]:
+    """Get timeline JSON for video"""
     video = db.query(models.Video).filter(models.Video.id == video_id).first()
     if not video:
         raise ValueError("Video not found")
     if not video.timeline_json:
         raise ValueError("No timeline found for video")
     return video.timeline_json
+
+
+def analyze_content_potential(db: Session, video_id: int) -> Dict[str, Any]:
+    """Analyze content potential with clean metrics"""
+    shots = (
+        db.query(models.Shot)
+        .filter(models.Shot.video_id == video_id)
+        .order_by(models.Shot.shot_index.asc())
+        .all()
+    )
+    
+    if not shots:
+        return {"error": "No shots found"}
+    
+    analyzer = PodcastHighlightsAnalyzer()
+    
+    clips = []
+    for shot in shots:
+        clip = VideoClip(
+            id=shot.id,
+            source_path="",
+            start_time=float(shot.start_time or 0.0),
+            end_time=float(shot.end_time or 0.0),
+            transcript=shot.transcript or "",
+            summary=shot.analysis or ""
+        )
+        clip.content_score = analyzer.calculate_content_score(clip)
+        clips.append(clip)
+    
+    scores = [clip.content_score for clip in clips]
+    total_duration = sum(clip.duration for clip in clips)
+    
+    return {
+        "total_clips": len(clips),
+        "total_duration": total_duration,
+        "average_score": sum(scores) / len(scores) if scores else 0,
+        "max_score": max(scores) if scores else 0,
+        "high_quality_clips": len([s for s in scores if s >= 5.0]),
+        "usable_clips": len([s for s in scores if s >= 2.0]),
+        "content_density": len([s for s in scores if s >= 3.0]) / len(scores) if scores else 0
+    }
+
+
+# Multi-video project functions
+def create_multi_video_project(db: Session,
+                              video_ids: List[int],
+                              content_type: str,
+                              target_platform: str = "youtube_shorts",
+                              brief: Optional[str] = None) -> Dict[str, Any]:
+    """Create project from multiple videos"""
+    editor = VideoEditor(db)
+    
+    # Convert string to enum
+    try:
+        content_enum = ContentType(content_type)
+    except ValueError:
+        content_enum = ContentType.PODCAST_HIGHLIGHTS
+    
+    project = editor.create_project(
+        name=f"Multi_video_project_{int(time.time())}",
+        content_type=content_enum,
+        target_platform=target_platform,
+        brief=brief
+    )
+    
+    # Add all videos to project
+    for video_id in video_ids:
+        editor.add_video_to_project(project, video_id)
+    
+    # Generate combined edit
+    result = editor.generate_edit(project)
+    
+    # Return project summary
+    return {
+        "project_id": project.id,
+        "source_videos": len(project.source_videos),
+        "total_clips": len(project.clips),
+        "selected_clips": len(result.timeline.items) if result.timeline else 0,
+        "final_duration": result.timeline.total_duration if result.timeline else 0,
+        "content_type": content_type,
+        "platform": target_platform
+    }
+
+
+def get_project_analytics(db: Session, video_ids: List[int]) -> Dict[str, Any]:
+    """Get analytics for multi-video project"""
+    total_clips = 0
+    total_duration = 0.0
+    quality_scores = []
+    
+    for video_id in video_ids:
+        shots = db.query(models.Shot).filter(models.Shot.video_id == video_id).all()
+        
+        analyzer = PodcastHighlightsAnalyzer()
+        
+        for shot in shots:
+            clip = VideoClip(
+                id=shot.id,
+                source_path="",
+                start_time=float(shot.start_time or 0.0),
+                end_time=float(shot.end_time or 0.0),
+                transcript=shot.transcript or "",
+                summary=shot.analysis or ""
+            )
+            score = analyzer.calculate_content_score(clip)
+            quality_scores.append(score)
+            total_clips += 1
+            total_duration += clip.duration
+    
+    return {
+        "source_videos": len(video_ids),
+        "total_source_clips": total_clips,
+        "total_source_duration": total_duration,
+        "average_quality": sum(quality_scores) / len(quality_scores) if quality_scores else 0,
+        "high_quality_clips": len([s for s in quality_scores if s >= 5.0]),
+        "recommended_highlights": min(total_clips, 10),
+        "estimated_output_duration": min(total_duration * 0.15, 59.0)  # 15% of source material
+    }
