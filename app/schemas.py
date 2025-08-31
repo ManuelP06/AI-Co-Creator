@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import List, Optional, Literal, Dict, Any, Union
 from enum import Enum
 
@@ -39,13 +39,10 @@ class ShotListResponse(BaseModel):
 
 class ContentType(str, Enum):
     """Content types for different editing strategies"""
-    PODCAST_HIGHLIGHTS = "podcast_highlights"
-    INTERVIEW_CLIPS = "interview_clips"
-    EDUCATIONAL_SUMMARY = "educational_summary"
-    ENTERTAINMENT_COMPILATION = "entertainment_compilation"
+    INTERVIEW = "interview"
+    EDUCATIONAL = "educational"
+    ENTERTAINMENT = "entertainment"
     PRODUCT_DEMO = "product_demo"
-    TESTIMONIAL_REEL = "testimonial_reel"
-    EVENT_HIGHLIGHTS = "event_highlights"
 
 class TransitionType(str, Enum):
     """Professional video transitions"""
@@ -66,11 +63,13 @@ class VideoClipSchema(BaseModel):
     summary: str = ""
     tags: List[str] = Field(default_factory=list)
     
-    @validator('end_time')
-    def end_time_must_be_after_start(cls, v, values):
-        if 'start_time' in values and v <= values['start_time']:
+    @model_validator(mode='after')
+    def validate_times(self):
+        if self.end_time <= self.start_time:
             raise ValueError('end_time must be greater than start_time')
-        return v
+        if abs(self.duration - (self.end_time - self.start_time)) > 0.1:
+            raise ValueError('duration must match end_time - start_time')
+        return self
 
 class TimelineItem(BaseModel):
     """Individual timeline item"""
@@ -81,11 +80,11 @@ class TimelineItem(BaseModel):
     highlight_reason: str = ""
     transition_type: TransitionType = TransitionType.HARD_CUT
     
-    @validator('end_time')
-    def validate_end_time(cls, v, values):
-        if 'start_time' in values and v <= values['start_time']:
+    @model_validator(mode='after')
+    def validate_timeline_item(self):
+        if self.end_time <= self.start_time:
             raise ValueError('end_time must be greater than start_time')
-        return v
+        return self
 
 class StoryBeat(BaseModel):
     """Storyboard beat structure"""
@@ -107,6 +106,23 @@ class TimelinePlan(BaseModel):
     """Complete timeline plan"""
     total_duration: float = Field(..., ge=0.0)
     items: List[TimelineItem] = Field(..., min_items=1)
+    
+    @model_validator(mode='after')
+    def validate_timeline_consistency(self):
+        if not self.items:
+            return self
+        
+        # Validate order sequence
+        orders = [item.order for item in self.items]
+        if sorted(orders) != list(range(1, len(orders) + 1)):
+            raise ValueError('Timeline items must have consecutive order numbers starting from 1')
+        
+        # Validate total duration consistency
+        calculated_duration = sum(item.end_time - item.start_time for item in self.items)
+        if abs(self.total_duration - calculated_duration) > 0.5:
+            raise ValueError('total_duration must match sum of item durations')
+        
+        return self
 
 class EditorAgentResponse(BaseModel):
     """Response from editor agent"""
@@ -120,6 +136,15 @@ class EditingProjectRequest(BaseModel):
     target_platform: Literal["youtube_shorts", "tiktok", "instagram_reels", "custom"] = "youtube_shorts"
     video_ids: List[int] = Field(..., min_items=1)
     brief: Optional[str] = None
+    
+    @field_validator('video_ids')
+    @classmethod
+    def validate_video_ids(cls, v):
+        if not all(vid > 0 for vid in v):
+            raise ValueError('All video IDs must be positive integers')
+        if len(set(v)) != len(v):
+            raise ValueError('Video IDs must be unique')
+        return v
 
 class EditingProjectResponse(BaseModel):
     """Response for editing project creation"""
@@ -169,6 +194,24 @@ class VideoFormatSchema(BaseModel):
     name: str
     ratio: str
     platform: str
+    
+    @model_validator(mode='after')
+    def validate_format(self):
+        # Validate common aspect ratios
+        calculated_ratio = self.width / self.height
+        ratio_map = {
+            "9:16": 9/16,
+            "16:9": 16/9,
+            "1:1": 1.0,
+            "4:3": 4/3
+        }
+        
+        if self.ratio in ratio_map:
+            expected_ratio = ratio_map[self.ratio]
+            if abs(calculated_ratio - expected_ratio) > 0.01:
+                raise ValueError(f'Width/height does not match specified ratio {self.ratio}')
+        
+        return self
 
 class CaptionStyle(BaseModel):
     """Caption styling options"""
@@ -177,6 +220,17 @@ class CaptionStyle(BaseModel):
     color: str = "white"
     outline: str = "black"
     outline_width: str = "3"
+    
+    @field_validator('size', 'outline_width')
+    @classmethod
+    def validate_numeric_string(cls, v):
+        try:
+            num_val = int(v)
+            if num_val <= 0:
+                raise ValueError('Size and outline_width must be positive numbers')
+        except ValueError:
+            raise ValueError('Size and outline_width must be valid positive integers as strings')
+        return v
 
 class RenderRequest(BaseModel):
     """Request for video rendering"""
@@ -187,6 +241,15 @@ class RenderRequest(BaseModel):
     use_gpu: bool = False
     auto_captions: bool = True
     caption_style: Optional[CaptionStyle] = None
+    
+    @field_validator('output_path')
+    @classmethod
+    def validate_output_path(cls, v):
+        if not v.strip():
+            raise ValueError('output_path cannot be empty')
+        if not v.endswith(('.mp4', '.mov', '.avi')):
+            raise ValueError('output_path must have a valid video file extension')
+        return v
 
 class ViralMetrics(BaseModel):
     """Viral content performance metrics"""
@@ -249,23 +312,19 @@ class TimelineExportResponse(BaseModel):
     format: str
     error: Optional[str] = None
 
-class LegacyViralMetrics(BaseModel):
-    """Legacy viral metrics format - DEPRECATED"""
-    total_clips: int = Field(..., ge=0)
-    total_duration: float = Field(..., ge=0.0)
-    avg_viral_score: float = Field(..., ge=0.0, le=10.0)
-    max_viral_score: float = Field(..., ge=0.0, le=10.0)
-    hook_quality: float = Field(..., ge=0.0, le=10.0)
-    viral_clips_count: int = Field(..., ge=0)
-    duration_efficiency: float = Field(..., ge=0.0, le=1.0)
-    optimal_for_viral: bool
-
 class MultiVideoProjectRequest(BaseModel):
     """Request for multi-video project creation"""
     video_ids: List[int] = Field(..., min_items=1)
     content_type: ContentType
     target_platform: Literal["youtube_shorts", "tiktok", "instagram_reels", "custom"] = "youtube_shorts"
     brief: Optional[str] = None
+    
+    @field_validator('video_ids')
+    @classmethod
+    def validate_unique_video_ids(cls, v):
+        if len(set(v)) != len(v):
+            raise ValueError('Video IDs must be unique')
+        return v
 
 class ProjectClipAnalysis(BaseModel):
     """Analysis of clips within a project"""
@@ -283,53 +342,6 @@ class ProjectAnalysisResponse(BaseModel):
     recommendations: List[str]
     platform_optimization: Dict[str, Any]
 
-def validate_platform_duration(platform: str, duration: float) -> bool:
-    """Validate duration against platform limits"""
-    limits = {
-        "tiktok": 60.0,
-        "instagram": 60.0, 
-        "youtube": 60.0,
-        "youtube_shorts": 60.0,
-        "custom": 300.0
-    }
-    return duration <= limits.get(platform, 60.0)
-
-def get_platform_video_format(platform: str) -> VideoFormatSchema:
-    """Get recommended video format for platform"""
-    formats = {
-        "tiktok": VideoFormatSchema(
-            width=1080, height=1920, name="9x16", 
-            ratio="9:16", platform="TikTok"
-        ),
-        "instagram": VideoFormatSchema(
-            width=1080, height=1920, name="9x16",
-            ratio="9:16", platform="Instagram Reels"
-        ),
-        "youtube": VideoFormatSchema(
-            width=1080, height=1920, name="9x16",
-            ratio="9:16", platform="YouTube Shorts"
-        )
-    }
-    return formats.get(platform, formats["tiktok"])
-
-def get_default_caption_style(platform: str) -> CaptionStyle:
-    """Get default caption style for platform"""
-    styles = {
-        "tiktok": CaptionStyle(
-            font="Arial Bold", size="36", color="white",
-            outline="black", outline_width="3"
-        ),
-        "instagram": CaptionStyle(
-            font="Helvetica Bold", size="32", color="white",
-            outline="black", outline_width="2"
-        ),
-        "youtube": CaptionStyle(
-            font="Roboto Bold", size="28", color="yellow",
-            outline="black", outline_width="2"
-        )
-    }
-    return styles.get(platform, styles["tiktok"])
-
 class ClipSelectionCriteria(BaseModel):
     """Criteria for clip selection"""
     min_score: float = Field(default=2.0, ge=0.0, le=10.0)
@@ -345,6 +357,13 @@ class EditingStrategy(BaseModel):
     platform_optimizations: Dict[str, Any] = Field(default_factory=dict)
     narrative_priority: float = Field(default=1.0, ge=0.0, le=1.0)
     viral_priority: float = Field(default=0.0, ge=0.0, le=1.0)
+    
+    @model_validator(mode='after')
+    def validate_priorities(self):
+        total = self.narrative_priority + self.viral_priority
+        if abs(total - 1.0) > 0.01:
+            raise ValueError('narrative_priority + viral_priority must equal 1.0')
+        return self
 
 class ProjectConfiguration(BaseModel):
     """Complete project configuration"""
@@ -354,6 +373,17 @@ class ProjectConfiguration(BaseModel):
     strategy: EditingStrategy
     brief: Optional[str] = None
     custom_limits: Optional[Dict[str, float]] = None
+    
+    @field_validator('custom_limits')
+    @classmethod
+    def validate_custom_limits(cls, v):
+        if v is not None:
+            required_keys = ['max_duration', 'ideal_clips', 'max_clip_duration']
+            if not all(key in v for key in required_keys):
+                raise ValueError(f'custom_limits must contain: {required_keys}')
+            if any(val <= 0 for val in v.values()):
+                raise ValueError('All custom limit values must be positive')
+        return v
 
 class AdvancedEditRequest(BaseModel):
     """Advanced editing request with full configuration"""
@@ -370,7 +400,6 @@ class AdvancedEditResponse(BaseModel):
     rendered_video_path: Optional[str] = None
     export_files: Dict[str, str] = Field(default_factory=dict)
 
-
 class PlatformLimits(BaseModel):
     """Platform-specific video limits"""
     max_duration: float = Field(..., gt=0.0)
@@ -386,15 +415,23 @@ class PlatformOptimization(BaseModel):
     viral_keywords: List[str] = Field(default_factory=list)
     engagement_hooks: List[str] = Field(default_factory=list)
 
-
 class BatchRenderRequest(BaseModel):
     """Request for batch rendering multiple videos"""
     video_ids: List[int] = Field(..., min_items=1)
     platforms: List[str] = Field(default=["tiktok"])
-    content_type: ContentType = ContentType.PODCAST_HIGHLIGHTS
+    content_type: ContentType = ContentType.INTERVIEW
     quality: Literal["low", "medium", "high"] = "high"
     use_gpu: bool = False
     output_directory: str
+    
+    @field_validator('platforms')
+    @classmethod
+    def validate_platforms(cls, v):
+        valid_platforms = ["tiktok", "instagram", "youtube", "youtube_shorts"]
+        invalid = [p for p in v if p not in valid_platforms]
+        if invalid:
+            raise ValueError(f'Invalid platforms: {invalid}. Valid: {valid_platforms}')
+        return v
 
 class BatchRenderJob(BaseModel):
     """Individual batch render job"""
@@ -412,7 +449,6 @@ class BatchRenderResponse(BaseModel):
     completed_jobs: List[BatchRenderJob]
     failed_jobs: List[BatchRenderJob]
     summary: Dict[str, Any]
-
 
 class QualityMetrics(BaseModel):
     """Video quality assessment"""
@@ -457,7 +493,6 @@ class RenderConfiguration(BaseModel):
     temp_directory: Optional[str] = None
     cleanup_temp_files: bool = True
 
-
 class ErrorDetail(BaseModel):
     """Detailed error information"""
     error_type: str
@@ -473,7 +508,73 @@ class OperationStatus(BaseModel):
     details: Optional[ErrorDetail] = None
     execution_time: Optional[float] = None
 
-# Rebuild models to resolve forward references
+# Utility functions
+def validate_platform_duration(platform: str, duration: float) -> bool:
+    """Validate duration against platform limits"""
+    limits = {
+        "tiktok": 60.0,
+        "instagram": 60.0, 
+        "youtube": 60.0,
+        "youtube_shorts": 60.0,
+        "custom": 300.0
+    }
+    return duration <= limits.get(platform, 60.0)
+
+def get_platform_video_format(platform: str) -> VideoFormatSchema:
+    """Get recommended video format for platform"""
+    formats = {
+        "tiktok": VideoFormatSchema(
+            width=1080, height=1920, name="9x16", 
+            ratio="9:16", platform="TikTok"
+        ),
+        "instagram": VideoFormatSchema(
+            width=1080, height=1920, name="9x16",
+            ratio="9:16", platform="Instagram Reels"
+        ),
+        "youtube": VideoFormatSchema(
+            width=1080, height=1920, name="9x16",
+            ratio="9:16", platform="YouTube Shorts"
+        ),
+        "youtube_shorts": VideoFormatSchema(
+            width=1080, height=1920, name="9x16",
+            ratio="9:16", platform="YouTube Shorts"
+        )
+    }
+    return formats.get(platform, formats["tiktok"])
+
+def get_default_caption_style(platform: str) -> CaptionStyle:
+    """Get default caption style for platform"""
+    styles = {
+        "tiktok": CaptionStyle(
+            font="Arial Bold", size="36", color="white",
+            outline="black", outline_width="3"
+        ),
+        "instagram": CaptionStyle(
+            font="Helvetica Bold", size="32", color="white",
+            outline="black", outline_width="2"
+        ),
+        "youtube": CaptionStyle(
+            font="Roboto Bold", size="28", color="yellow",
+            outline="black", outline_width="2"
+        ),
+        "youtube_shorts": CaptionStyle(
+            font="Roboto Bold", size="28", color="yellow",
+            outline="black", outline_width="2"
+        )
+    }
+    return styles.get(platform, styles["tiktok"])
+
+def get_platform_limits(platform: str) -> Dict[str, float]:
+    """Get platform limits as dictionary"""
+    limits = {
+        "youtube_shorts": {"max_duration": 59.0, "ideal_clips": 6, "max_clip_duration": 8.0},
+        "tiktok": {"max_duration": 59.0, "ideal_clips": 7, "max_clip_duration": 7.0},
+        "instagram_reels": {"max_duration": 59.0, "ideal_clips": 6, "max_clip_duration": 8.0},
+        "custom": {"max_duration": 300.0, "ideal_clips": 20, "max_clip_duration": 15.0}
+    }
+    return limits.get(platform, limits["custom"])
+
+# Model rebuilds for forward references
 EditorAgentResponse.model_rebuild()
 Storyboard.model_rebuild()
 TimelinePlan.model_rebuild()
@@ -484,3 +585,6 @@ EditingProjectResponse.model_rebuild()
 AdvancedEditResponse.model_rebuild()
 BatchRenderResponse.model_rebuild()
 RenderJobStatus.model_rebuild()
+ProjectAnalysisResponse.model_rebuild()
+PlatformLimits.model_rebuild()
+PlatformOptimization.model_rebuild()

@@ -564,16 +564,20 @@ class VideoEditor:
 
 
 def run_editor_agent(db: Session, video_id: int, user_brief: Optional[str] = None) -> EditorAgentResponse:
-    """Legacy function - creates single video highlight reel"""
+    """Legacy function - creates single video reel"""
     editor = VideoEditor(db)
     
     content_type = ContentType.INTERVIEW
     if user_brief:
         brief_lower = user_brief.lower()
-        if any(word in brief_lower for word in ["viral", "tiktok", "instagram"]):
+        if "entertainment" in brief_lower:
             content_type = ContentType.ENTERTAINMENT
         elif "education" in brief_lower:
             content_type = ContentType.EDUCATIONAL
+        elif "interview" in brief_lower:
+            content_type = ContentType.INTERVIEW
+        elif "product_demo" in brief_lower:
+            content_type = ContentType.PRODUCT_DEMO
     
     project = editor.create_project(
         name=f"Video_{video_id}_highlights",
