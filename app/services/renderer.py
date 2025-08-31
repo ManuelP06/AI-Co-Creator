@@ -104,8 +104,7 @@ class Timeline:
 
 class FFmpegRenderer:
     """
-    High-performance FFmpeg-based video renderer with FIXED auto-captions.
-    Optimized for viral short-form content creation.
+    FFmpeg-based video renderer with FIXED auto-captions.
     """
     
     def __init__(self, timeline: Timeline):
@@ -119,9 +118,6 @@ class FFmpegRenderer:
                     use_gpu: bool = False,
                     auto_captions: bool = True,  
                     caption_style: Optional[Dict[str, str]] = None) -> None:
-        """
-        Render timeline to video using FFmpeg with WORKING auto-captions.
-        """
         if not self.timeline.clips:
             raise RuntimeError("Timeline has no clips to render.")
 
@@ -149,7 +145,6 @@ class FFmpegRenderer:
                 raise
 
     def _render_base_video(self, output_path: str, video_format: VideoFormat, quality: str, use_gpu: bool) -> None:
-        """Render base video without captions using concatenation"""
         
         segment_files = self._prepare_segments()
         
@@ -339,24 +334,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         
         logger.info(f"Created ASS subtitle file with {len(events)} captions")
 
-    def _optimize_caption_text(self, text: str) -> str:
-        """Optimize caption text for viral content readability"""
-        filler_words = r'\b(um|uh|like|you know|actually|basically|literally|so)\b'
-        text = re.sub(filler_words, '', text, flags=re.IGNORECASE)
-        
-        text = re.sub(r'\s+', ' ', text).strip()
-        
-        viral_words = ['amazing', 'incredible', 'shocking', 'secret', 'revealed']
-        for word in viral_words:
-            pattern = r'\b' + re.escape(word) + r'\b'
-            replacement = f"{{\\b1}}{word}{{\\b0}}"  
-            text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
-        
-        if len(text) > 100:
-            text = text[:97] + "..."
-        
-        return text
-
     def _seconds_to_ass_time(self, seconds: float) -> str:
         """Convert seconds to ASS time format (H:MM:SS.CC)"""
         hours = int(seconds // 3600)
@@ -404,7 +381,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             raise RuntimeError(f"FFmpeg rendering failed: {e.stderr}")
 
 
-VIRAL_CAPTION_STYLES = {
+CAPTION_STYLES = {
     "tiktok": {
         "font": "Arial Bold",
         "size": "36",
@@ -436,7 +413,7 @@ VIRAL_CAPTION_STYLES = {
 }
 
 
-class ViralVideoRenderer(FFmpegRenderer):
+class VideoRenderer(FFmpegRenderer):
     """Specialized renderer for viral short-form content"""
     
     def __init__(self, timeline: Timeline):
@@ -452,17 +429,17 @@ class ViralVideoRenderer(FFmpegRenderer):
         platform_settings = {
             "tiktok": {
                 "format": VideoFormat.PORTRAIT,
-                "caption_style": VIRAL_CAPTION_STYLES["tiktok"],
+                "caption_style": CAPTION_STYLES["tiktok"],
                 "max_duration": 60.0
             },
             "instagram": {
                 "format": VideoFormat.PORTRAIT,
-                "caption_style": VIRAL_CAPTION_STYLES["instagram"], 
+                "caption_style": CAPTION_STYLES["instagram"], 
                 "max_duration": 60.0
             },
             "youtube": {
                 "format": VideoFormat.PORTRAIT,
-                "caption_style": VIRAL_CAPTION_STYLES["youtube"],
+                "caption_style": CAPTION_STYLES["youtube"],
                 "max_duration": 60.0
             },
         }
@@ -481,19 +458,17 @@ class ViralVideoRenderer(FFmpegRenderer):
         )
 
 
-class VideoCompiler(ViralVideoRenderer):
-    """Enhanced compatibility wrapper with viral optimization"""
-    
+class VideoCompiler(VideoRenderer):    
     def render_with_moviepy(self, *args, **kwargs):
         """Legacy method - redirects to optimized viral renderer"""
-        logger.warning("render_with_moviepy is deprecated, using ViralVideoRenderer instead")
+        logger.warning("render_with_moviepy is deprecated, using VideoRenderer instead")
         
         output_path = kwargs.get('output_path')
         quality = kwargs.get('quality', 'high')
         use_gpu = kwargs.get('use_gpu', False)
         video_format = kwargs.get('video_format', VideoFormat.PORTRAIT)
         auto_captions = kwargs.get('auto_captions', True)
-        caption_style = kwargs.get('caption_style', VIRAL_CAPTION_STYLES["tiktok"])
+        caption_style = kwargs.get('caption_style', CAPTION_STYLES["tiktok"])
         
         return self.render_video(
             output_path=output_path,
@@ -563,7 +538,7 @@ def check_ffmpeg_capabilities() -> Dict[str, Any]:
 
 
 def optimize_ffmpeg_for_viral() -> Dict[str, str]:
-    """Return optimized FFmpeg flags for viral content"""
+    """Return optimized FFmpeg flags for content"""
     return {
         "video_codec": "libx264",
         "preset": "medium", 

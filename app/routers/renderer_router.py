@@ -14,9 +14,9 @@ from app.database import get_db
 from app.services.renderer import (
     Timeline,
     VideoClip,
-    ViralVideoRenderer,
+    VideoRenderer,
     VideoFormat,
-    VIRAL_CAPTION_STYLES,
+    CAPTION_STYLES,
     check_ffmpeg_capabilities
 )
 from app.services.editor import get_timeline_json
@@ -24,15 +24,12 @@ from app import models
 
 router = APIRouter(prefix="/renderer", tags=["renderer"])
 
-# Configuration
 OUTPUT_DIR = os.getenv("OUTPUT_DIR", "outputs")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# Background job tracking (in production, use Redis/Celery)
 render_jobs: Dict[str, Dict[str, Any]] = {}
 
 
-# Request/Response Models
 class RenderRequest(BaseModel):
     """Request model for video rendering"""
     output_filename: Optional[str] = Field(None, description="Custom output filename")
@@ -64,7 +61,6 @@ class RenderResponse(BaseModel):
     created_at: datetime
 
 
-# Single Video Rendering
 @router.post("/{video_id}/render")
 def render_video(
     video_id: int,
@@ -75,10 +71,9 @@ def render_video(
     """
     Render a video timeline to final output.
     
-    Creates a professionally edited short-form video optimized for the target platform.
+    Creates a edited short-form video optimized for the target platform.
     Supports GPU acceleration and automatic captions for maximum engagement.
     """
-    # Validate video and timeline exist
     video = db.query(models.Video).filter(models.Video.id == video_id).first()
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
@@ -89,12 +84,10 @@ def render_video(
             detail="No timeline found. Please create an edit plan first."
         )
     
-    # Generate job ID and output path
     job_id = f"render_{video_id}_{int(datetime.now().timestamp())}"
     output_filename = request.output_filename or f"video_{video_id}_{request.platform}.mp4"
     output_path = os.path.join(OUTPUT_DIR, output_filename)
     
-    # Create job entry
     render_jobs[job_id] = {
         "status": "queued",
         "video_id": video_id,
@@ -105,7 +98,6 @@ def render_video(
         "progress": 0
     }
     
-    # Queue background rendering
     background_tasks.add_task(
         _render_video_background,
         job_id=job_id,
@@ -149,7 +141,6 @@ def get_render_status(video_id: int, job_id: str):
     }
 
 
-# Batch Rendering
 @router.post("/batch/render")
 def batch_render_videos(
     request: BatchRenderRequest,
@@ -162,7 +153,6 @@ def batch_render_videos(
     Efficiently processes multiple videos with the same settings.
     Returns batch job ID for tracking progress.
     """
-    # Validate all videos exist and have timelines
     for video_id in request.video_ids:
         video = db.query(models.Video).filter(models.Video.id == video_id).first()
         if not video:
@@ -173,10 +163,8 @@ def batch_render_videos(
                 detail=f"Video {video_id} has no timeline. Create edit plan first."
             )
     
-    # Create batch job
     batch_job_id = f"batch_{int(datetime.now().timestamp())}"
     
-    # Queue individual render jobs
     job_ids = []
     for video_id in request.video_ids:
         job_id = f"render_{video_id}_{int(datetime.now().timestamp())}"
@@ -206,7 +194,6 @@ def batch_render_videos(
     }
 
 
-# File Management
 @router.get("/download/{filename}")
 def download_rendered_video(filename: str):
     """
@@ -253,10 +240,8 @@ def list_rendered_videos(
                     "modified_at": datetime.fromtimestamp(stat.st_mtime)
                 })
         
-        # Sort by creation time (newest first)
         files.sort(key=lambda x: x["created_at"], reverse=True)
         
-        # Apply pagination
         total = len(files)
         files = files[offset:offset + limit]
         
@@ -293,7 +278,6 @@ def delete_rendered_video(filename: str):
         raise HTTPException(status_code=500, detail=f"Failed to delete file: {str(e)}")
 
 
-# System and Capabilities
 @router.get("/capabilities")
 def get_rendering_capabilities():
     """
@@ -316,7 +300,7 @@ def get_rendering_capabilities():
                 }
                 for fmt in VideoFormat
             ],
-            "caption_styles": list(VIRAL_CAPTION_STYLES.keys()),
+            "caption_styles": list(CAPTION_STYLES.keys()),
             "quality_options": ["high", "medium", "low"],
             "output_directory": OUTPUT_DIR
         }
@@ -328,7 +312,6 @@ def get_rendering_capabilities():
 
 
 
-# Background Job Functions
 async def _render_video_background(
     job_id: str,
     video_id: int,
@@ -337,27 +320,22 @@ async def _render_video_background(
 ):
     """Background task for video rendering"""
     try:
-        # Update job status
         render_jobs[job_id]["status"] = "processing"
         render_jobs[job_id]["progress"] = 10
         
-        # Get timeline data
         timeline_data = get_timeline_json(db, video_id)
         
-        # Create timeline object
         timeline = Timeline()
         
-        # Convert timeline items to video clips
         for item in timeline_data.get("items", []):
-            # Get source video path from database
             shot = db.query(models.Shot).filter(models.Shot.id == item["clip_id"]).first()
             if not shot:
                 continue
             
             video_clip = VideoClip(
                 source_video=shot.video.file_path,
-                start_frame=0,  # Calculate if needed
-                end_frame=0,    # Calculate if needed
+                start_frame=0,  
+                end_frame=0,    
                 start_time=item["start_time"],
                 end_time=item["end_time"],
                 duration=item["end_time"] - item["start_time"],
@@ -368,10 +346,8 @@ async def _render_video_background(
         
         render_jobs[job_id]["progress"] = 30
         
-        # Initialize renderer
-        renderer = ViralVideoRenderer(timeline)
+        renderer = VideoRenderer(timeline)
         
-        # Render video
         output_path = render_jobs[job_id]["output_path"]
         
         render_jobs[job_id]["progress"] = 50
@@ -384,9 +360,8 @@ async def _render_video_background(
                 use_gpu=request.use_gpu
             )
         else:
-            # Custom rendering
             video_format = VideoFormat.PORTRAIT  # Default
-            caption_style = VIRAL_CAPTION_STYLES.get(request.caption_style, VIRAL_CAPTION_STYLES["professional"])
+            caption_style = CAPTION_STYLES.get(request.caption_style, CAPTION_STYLES["professional"])
             
             renderer.render_video(
                 output_path=output_path,
@@ -397,7 +372,6 @@ async def _render_video_background(
                 caption_style=caption_style
             )
         
-        # Update job completion
         render_jobs[job_id].update({
             "status": "completed",
             "progress": 100,
@@ -414,7 +388,6 @@ async def _render_video_background(
         logger.error(f"Render job {job_id} failed: {e}")
 
 
-# Job Management
 @router.get("/jobs")
 def list_render_jobs(
     status: Optional[str] = Query(None, description="Filter by status"),
@@ -430,10 +403,8 @@ def list_render_jobs(
     if status:
         jobs = [job for job in jobs if job.get("status") == status]
     
-    # Sort by creation time (newest first)
     jobs.sort(key=lambda x: x.get("created_at", datetime.min), reverse=True)
     
-    # Apply limit
     jobs = jobs[:limit]
     
     return {
@@ -455,7 +426,6 @@ def get_job_status(job_id: str):
     
     job = render_jobs[job_id]
     
-    # Add file info if completed
     if job["status"] == "completed" and job.get("output_path"):
         if os.path.exists(job["output_path"]):
             stat = os.stat(job["output_path"])

@@ -14,14 +14,12 @@ from ollama import Client
 from app import models
 from app.schemas import EditorAgentResponse, TimelinePlan, Storyboard, TimelineItem
 
-# Configuration
 OLLAMA_MODEL = "llama3.1:8b"
 OLLAMA_HOST = "http://127.0.0.1:11434"
 OLLAMA_TIMEOUT_S = 180
 OLLAMA_RETRIES = 3
 TEMPERATURE = 0.25
 
-# Video constraints by platform
 PLATFORM_LIMITS = {
     "youtube_shorts": {"max_duration": 59.0, "ideal_clips": 6, "max_clip_duration": 8.0},
     "tiktok": {"max_duration": 59.0, "ideal_clips": 7, "max_clip_duration": 7.0},
@@ -35,13 +33,10 @@ client = Client(host=OLLAMA_HOST)
 
 class ContentType(Enum):
     """Supported content types for different use cases"""
-    PODCAST_HIGHLIGHTS = "podcast_highlights"
-    INTERVIEW_CLIPS = "interview_clips"
-    EDUCATIONAL_SUMMARY = "educational_summary"
-    ENTERTAINMENT_COMPILATION = "entertainment_compilation"
+    INTERVIEW = "interview"
+    EDUCATIONAL = "educational"
+    ENTERTAINMENT = "entertainment"
     PRODUCT_DEMO = "product_demo"
-    TESTIMONIAL_REEL = "testimonial_reel"
-    EVENT_HIGHLIGHTS = "event_highlights"
 
 
 class TransitionType(Enum):
@@ -61,7 +56,7 @@ class VideoClip:
     end_time: float
     content_score: float = 0.0
     transcript: str = ""
-    summary: str = ""
+    analysis: str = ""
     tags: List[str] = field(default_factory=list)
     
     @property
@@ -77,7 +72,7 @@ class VideoClip:
             "duration": self.duration,
             "content_score": self.content_score,
             "transcript": self.transcript,
-            "summary": self.summary,
+            "summary": self.analysis,
             "tags": self.tags
         }
 
@@ -120,50 +115,11 @@ class ContentAnalyzer(ABC):
         pass
 
 
-class PodcastHighlightsAnalyzer(ContentAnalyzer):
-    """Analyzer for podcast/interview highlights"""
-    
-    def calculate_content_score(self, clip: VideoClip) -> float:
-        content = f"{clip.transcript} {clip.summary}".lower()
-        
-        # Key moments indicators
-        highlight_keywords = [
-            "key point", "important", "crucial", "essential", "main",
-            "breakthrough", "discovery", "insight", "revelation",
-            "strategy", "tip", "advice", "lesson", "mistake",
-            "story", "example", "experience", "case study",
-            "question", "answer", "explain", "clarify"
-        ]
-        
-        score = 0.0
-        for keyword in highlight_keywords:
-            if keyword in content:
-                score += 0.8
-        
-        # Engagement indicators
-        if any(marker in content for marker in ["laugh", "surprise", "wow", "amazing"]):
-            score += 1.0
-        
-        # Question/answer format
-        if "?" in content or any(q in content for q in ["what", "how", "why", "when"]):
-            score += 0.5
-        
-        return min(10.0, score)
-    
-    def get_selection_criteria(self) -> Dict[str, Any]:
-        return {
-            "min_score": 2.0,
-            "prefer_dialogue": True,
-            "maintain_context": True,
-            "ideal_clip_length": 5.0
-        }
-
-
 class ViralContentAnalyzer(ContentAnalyzer):
     """Analyzer for viral social media content"""
     
     def calculate_content_score(self, clip: VideoClip) -> float:
-        content = f"{clip.transcript} {clip.summary}".lower()
+        content = f"{clip.transcript} {clip.analysis}".lower()
         
         viral_indicators = [
             "shocking", "unbelievable", "secret", "truth", "exposed",
@@ -177,7 +133,6 @@ class ViralContentAnalyzer(ContentAnalyzer):
             if indicator in content:
                 score += 1.2
         
-        # Hook potential (first 3 seconds)
         if any(hook in content for hook in ["wait", "stop", "look", "imagine"]):
             score += 2.0
         
@@ -211,7 +166,7 @@ class EditorEngine:
                 start_time=float(shot.start_time or 0.0),
                 end_time=float(shot.end_time or 0.0),
                 transcript=shot.transcript or "",
-                summary=shot.analysis or ""
+                analysis=shot.analysis or ""
             )
             clip.content_score = self.analyzer.calculate_content_score(clip)
             self.clips.append(clip)
@@ -228,7 +183,7 @@ class EditorEngine:
                     start_time=float(shot.start_time or 0.0),
                     end_time=float(shot.end_time or 0.0),
                     transcript=shot.transcript or "",
-                    summary=shot.analysis or ""
+                    analysis=shot.analysis or ""
                 )
                 clip.content_score = self.analyzer.calculate_content_score(clip)
                 self.clips.append(clip)
@@ -239,17 +194,13 @@ class EditorEngine:
         min_score = criteria.get("min_score", 2.0)
         maintain_context = criteria.get("maintain_context", True)
         
-        # Filter by minimum quality
         candidates = [c for c in self.clips if c.content_score >= min_score]
         
         if maintain_context:
-            # Sort by original order to maintain narrative flow
             candidates.sort(key=lambda c: (c.source_path, c.start_time))
         else:
-            # Sort by content score for maximum impact
             candidates.sort(key=lambda c: c.content_score, reverse=True)
         
-        # Select clips within duration and count limits
         selected = []
         total_duration = 0.0
         
@@ -260,8 +211,7 @@ class EditorEngine:
             if total_duration + clip.duration <= target_duration:
                 selected.append(clip)
                 total_duration += clip.duration
-            elif target_duration - total_duration > 0.5:  # Minimum viable clip
-                # Trim clip to fit remaining time
+            elif target_duration - total_duration > 0.5:  
                 remaining_time = target_duration - total_duration
                 trimmed_clip = VideoClip(
                     id=clip.id,
@@ -270,7 +220,7 @@ class EditorEngine:
                     end_time=clip.start_time + remaining_time,
                     content_score=clip.content_score,
                     transcript=clip.transcript,
-                    summary=clip.summary,
+                    analysis=clip.analysis,
                     tags=clip.tags + ["trimmed"]
                 )
                 selected.append(trimmed_clip)
@@ -329,15 +279,7 @@ QUALITY STANDARDS:
     @staticmethod
     def get_content_specific_prompt(content_type: ContentType) -> str:
         prompts = {
-            ContentType.PODCAST_HIGHLIGHTS: """
-PODCAST HIGHLIGHTS STRATEGY:
-- Focus on key insights, memorable quotes, and valuable advice
-- Maintain conversational flow between clips
-- Include context for better understanding
-- Highlight unique perspectives or surprising revelations
-- Keep speaker identity clear throughout
-""",
-            ContentType.INTERVIEW_CLIPS: """
+            ContentType.INTERVIEW: """
 INTERVIEW CLIPS STRATEGY:
 - Capture the most insightful questions and answers
 - Show dynamic between interviewer and guest
@@ -345,7 +287,7 @@ INTERVIEW CLIPS STRATEGY:
 - Maintain professional tone while being engaging
 - Focus on actionable insights and key takeaways
 """,
-            ContentType.EDUCATIONAL_SUMMARY: """
+            ContentType.EDUCATIONAL: """
 EDUCATIONAL CONTENT STRATEGY:
 - Break down complex topics into digestible segments
 - Maintain logical learning progression
@@ -354,7 +296,7 @@ EDUCATIONAL CONTENT STRATEGY:
 - End with actionable next steps or key principles
 """
         }
-        return prompts.get(content_type, prompts[ContentType.PODCAST_HIGHLIGHTS])
+        return prompts.get(content_type, prompts[ContentType.INTERVIEW])
 
 
 class LLMService:
@@ -485,20 +427,15 @@ Return valid JSON with both 'storyboard' and 'timeline' keys.
             raise ValueError("No valid JSON found in LLM response")
 
 
-class VideoEditor:
-    """Main video editor with clean, extensible architecture"""
-    
+class VideoEditor:    
     def __init__(self, db: Session):
         self.db = db
         self.llm_service = LLMService(client)
         self.analyzer_map = {
-            ContentType.PODCAST_HIGHLIGHTS: PodcastHighlightsAnalyzer(),
-            ContentType.INTERVIEW_CLIPS: PodcastHighlightsAnalyzer(),  # Similar logic
-            ContentType.EDUCATIONAL_SUMMARY: PodcastHighlightsAnalyzer(),
-            ContentType.ENTERTAINMENT_COMPILATION: ViralContentAnalyzer(),
-            ContentType.PRODUCT_DEMO: PodcastHighlightsAnalyzer(),
-            ContentType.TESTIMONIAL_REEL: PodcastHighlightsAnalyzer(),
-            ContentType.EVENT_HIGHLIGHTS: ViralContentAnalyzer()
+            ContentType.INTERVIEW: ViralContentAnalyzer(),
+            ContentType.EDUCATIONAL: ViralContentAnalyzer(), 
+            ContentType.ENTERTAINMENT: ViralContentAnalyzer(),
+            ContentType.PRODUCT_DEMO: ViralContentAnalyzer(),
         }
     
     def create_project(self, 
@@ -508,7 +445,7 @@ class VideoEditor:
                       brief: Optional[str] = None) -> EditingProject:
         """Create new editing project"""
         project = EditingProject(
-            id=int(time.time()),  # Simple ID for now
+            id=int(time.time()),
             name=name,
             content_type=content_type,
             target_platform=target_platform,
@@ -524,7 +461,6 @@ class VideoEditor:
         
         project.add_source_video(video_id, video.file_path)
         
-        # Load shots for this video
         shots = (
             self.db.query(models.Shot)
             .filter(models.Shot.video_id == video_id)
@@ -535,8 +471,7 @@ class VideoEditor:
         if not shots:
             raise ValueError(f"No shots found for video {video_id}. Run shot detection first.")
         
-        # Convert shots to clips using appropriate analyzer
-        analyzer = self.analyzer_map.get(project.content_type, PodcastHighlightsAnalyzer())
+        analyzer = self.analyzer_map.get(project.content_type, ViralContentAnalyzer())
         
         for shot in shots:
             clip = VideoClip(
@@ -545,7 +480,7 @@ class VideoEditor:
                 start_time=float(shot.start_time or 0.0),
                 end_time=float(shot.end_time or 0.0),
                 transcript=shot.transcript or "",
-                summary=shot.analysis or ""
+                analysis=shot.analysis or ""
             )
             clip.content_score = analyzer.calculate_content_score(clip)
             project.clips.append(clip)
@@ -555,15 +490,12 @@ class VideoEditor:
         if not project.clips:
             raise ValueError("No clips available for editing")
         
-        # Get platform limits
         limits = project.get_platform_limits()
         
-        # Initialize editor engine with appropriate analyzer
-        analyzer = self.analyzer_map.get(project.content_type, PodcastHighlightsAnalyzer())
+        analyzer = self.analyzer_map.get(project.content_type, ViralContentAnalyzer())
         engine = EditorEngine(analyzer)
         engine.clips = project.clips
         
-        # Select best clips
         selected_clips = engine.select_best_clips(
             target_duration=limits["max_duration"],
             max_clips=limits["ideal_clips"]
@@ -572,14 +504,11 @@ class VideoEditor:
         if not selected_clips:
             raise ValueError("No clips met selection criteria")
         
-        # Generate LLM-powered edit plan
         llm_response = self.llm_service.generate_edit_plan(selected_clips, project)
         
-        # Validate and create timeline
         timeline_data = llm_response.get("timeline", {})
         storyboard_data = llm_response.get("storyboard")
         
-        # Create timeline items
         timeline_items = []
         for item_data in timeline_data.get("items", []):
             timeline_item = TimelineItem(
@@ -591,7 +520,6 @@ class VideoEditor:
             )
             timeline_items.append(timeline_item)
         
-        # Validate total duration
         total_duration = sum(item.end_time - item.start_time for item in timeline_items)
         
         timeline = TimelinePlan(
@@ -606,7 +534,6 @@ class VideoEditor:
             except Exception as e:
                 logger.warning(f"Storyboard validation failed: {e}")
         
-        # Save to database
         self._save_project_results(project, timeline, storyboard)
         
         logger.info(f"Edit generated: {len(timeline_items)} clips, {total_duration:.1f}s duration")
@@ -622,7 +549,7 @@ class VideoEditor:
                              storyboard: Optional[Storyboard]) -> None:
         """Save project results to database"""
         # For multi-video projects, save to the first video for now
-        # In production, you'd want a separate projects table
+        # In production, we need a separate projects table
         if project.source_videos:
             video_id = project.source_videos[0]["id"]
             video = self.db.query(models.Video).filter(models.Video.id == video_id).first()
@@ -636,21 +563,18 @@ class VideoEditor:
                 self.db.commit()
 
 
-# Legacy compatibility functions
 def run_editor_agent(db: Session, video_id: int, user_brief: Optional[str] = None) -> EditorAgentResponse:
     """Legacy function - creates single video highlight reel"""
     editor = VideoEditor(db)
     
-    # Determine content type from brief
-    content_type = ContentType.PODCAST_HIGHLIGHTS
+    content_type = ContentType.INTERVIEW
     if user_brief:
         brief_lower = user_brief.lower()
         if any(word in brief_lower for word in ["viral", "tiktok", "instagram"]):
-            content_type = ContentType.ENTERTAINMENT_COMPILATION
+            content_type = ContentType.ENTERTAINMENT
         elif "education" in brief_lower:
-            content_type = ContentType.EDUCATIONAL_SUMMARY
+            content_type = ContentType.EDUCATIONAL
     
-    # Create project
     project = editor.create_project(
         name=f"Video_{video_id}_highlights",
         content_type=content_type,
@@ -658,10 +582,8 @@ def run_editor_agent(db: Session, video_id: int, user_brief: Optional[str] = Non
         brief=user_brief
     )
     
-    # Add video to project
     editor.add_video_to_project(project, video_id)
     
-    # Generate edit
     return editor.generate_edit(project)
 
 
@@ -687,7 +609,7 @@ def analyze_content_potential(db: Session, video_id: int) -> Dict[str, Any]:
     if not shots:
         return {"error": "No shots found"}
     
-    analyzer = PodcastHighlightsAnalyzer()
+    analyzer = ViralContentAnalyzer()
     
     clips = []
     for shot in shots:
@@ -697,7 +619,7 @@ def analyze_content_potential(db: Session, video_id: int) -> Dict[str, Any]:
             start_time=float(shot.start_time or 0.0),
             end_time=float(shot.end_time or 0.0),
             transcript=shot.transcript or "",
-            summary=shot.analysis or ""
+            analysis=shot.analysis or ""
         )
         clip.content_score = analyzer.calculate_content_score(clip)
         clips.append(clip)
@@ -716,7 +638,6 @@ def analyze_content_potential(db: Session, video_id: int) -> Dict[str, Any]:
     }
 
 
-# Multi-video project functions
 def create_multi_video_project(db: Session,
                               video_ids: List[int],
                               content_type: str,
@@ -725,7 +646,6 @@ def create_multi_video_project(db: Session,
     """Create project from multiple videos"""
     editor = VideoEditor(db)
     
-    # Convert string to enum
     try:
         content_enum = ContentType(content_type)
     except ValueError:
@@ -738,14 +658,11 @@ def create_multi_video_project(db: Session,
         brief=brief
     )
     
-    # Add all videos to project
     for video_id in video_ids:
         editor.add_video_to_project(project, video_id)
     
-    # Generate combined edit
     result = editor.generate_edit(project)
     
-    # Return project summary
     return {
         "project_id": project.id,
         "source_videos": len(project.source_videos),
@@ -766,7 +683,7 @@ def get_project_analytics(db: Session, video_ids: List[int]) -> Dict[str, Any]:
     for video_id in video_ids:
         shots = db.query(models.Shot).filter(models.Shot.video_id == video_id).all()
         
-        analyzer = PodcastHighlightsAnalyzer()
+        analyzer = ViralContentAnalyzer()
         
         for shot in shots:
             clip = VideoClip(
@@ -775,7 +692,7 @@ def get_project_analytics(db: Session, video_ids: List[int]) -> Dict[str, Any]:
                 start_time=float(shot.start_time or 0.0),
                 end_time=float(shot.end_time or 0.0),
                 transcript=shot.transcript or "",
-                summary=shot.analysis or ""
+                analysis=shot.analysis or ""
             )
             score = analyzer.calculate_content_score(clip)
             quality_scores.append(score)
@@ -789,5 +706,5 @@ def get_project_analytics(db: Session, video_ids: List[int]) -> Dict[str, Any]:
         "average_quality": sum(quality_scores) / len(quality_scores) if quality_scores else 0,
         "high_quality_clips": len([s for s in quality_scores if s >= 5.0]),
         "recommended_highlights": min(total_clips, 10),
-        "estimated_output_duration": min(total_duration * 0.15, 59.0)  # 15% of source material
+        "estimated_output_duration": min(total_duration * 0.15, 59.0)  
     }

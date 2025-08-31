@@ -19,7 +19,6 @@ from app import models
 router = APIRouter(prefix="/editor", tags=["editor"])
 
 
-# Request/Response Models
 class EditingProjectRequest(BaseModel):
     """Request model for creating editing projects"""
     name: str = Field(..., description="Project name")
@@ -49,7 +48,6 @@ class ProjectResponse(BaseModel):
     platform: str
 
 
-# Single Video Editing Endpoints
 @router.post("/{video_id}/plan", response_model=EditorAgentResponse)
 def create_edit_plan(
     video_id: int,
@@ -62,12 +60,10 @@ def create_edit_plan(
     This endpoint analyzes the video content and generates an optimized timeline
     with the most engaging clips for short-form content creation.
     """
-    # Validate video exists
     video = db.query(models.Video).filter(models.Video.id == video_id).first()
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
     
-    # Check for processed shots
     shots_count = db.query(models.Shot).filter(models.Shot.video_id == video_id).count()
     if shots_count == 0:
         raise HTTPException(
@@ -105,33 +101,6 @@ def get_video_timeline(video_id: int, db: Session = Depends(get_db)):
         "generated_at": video.updated_at
     }
 
-
-@router.get("/{video_id}/analytics")
-def get_content_analytics(video_id: int, db: Session = Depends(get_db)):
-    """
-    Analyze content potential and quality metrics for a video.
-    
-    Provides insights into clip quality, content density, and editing potential.
-    """
-    video = db.query(models.Video).filter(models.Video.id == video_id).first()
-    if not video:
-        raise HTTPException(status_code=404, detail="Video not found")
-    
-    try:
-        analytics = analyze_content_potential(db, video_id)
-        if "error" in analytics:
-            raise HTTPException(status_code=400, detail=analytics["error"])
-        
-        return {
-            "video_id": video_id,
-            "analytics": analytics,
-            "recommendations": _generate_content_recommendations(analytics)
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Analytics failed: {str(e)}")
-
-
-# Multi-Video Project Endpoints
 @router.post("/projects/multi-video", response_model=ProjectResponse)
 def create_multi_video_edit(
     request: MultiVideoProjectRequest,
@@ -143,7 +112,6 @@ def create_multi_video_edit(
     Combines content from multiple source videos into a single engaging compilation.
     Perfect for creating podcast highlights, interview compilations, or event summaries.
     """
-    # Validate all videos exist and have shots
     for video_id in request.video_ids:
         video = db.query(models.Video).filter(models.Video.id == video_id).first()
         if not video:
@@ -178,75 +146,6 @@ def create_multi_video_edit(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Multi-video project failed: {str(e)}")
 
-
-@router.get("/projects/analytics")
-def get_multi_video_analytics(
-    video_ids: List[int] = Query(..., description="List of video IDs to analyze"),
-    db: Session = Depends(get_db)
-):
-    """
-    Get analytics for potential multi-video project.
-    
-    Analyzes multiple videos to provide insights about content quality,
-    estimated output duration, and editing recommendations.
-    """
-    if len(video_ids) < 2:
-        raise HTTPException(status_code=400, detail="At least 2 videos required for analysis")
-    
-    # Validate videos exist
-    for video_id in video_ids:
-        video = db.query(models.Video).filter(models.Video.id == video_id).first()
-        if not video:
-            raise HTTPException(status_code=404, detail=f"Video {video_id} not found")
-    
-    try:
-        analytics = get_project_analytics(db, video_ids)
-        return {
-            "analytics": analytics,
-            "recommendations": _generate_multi_video_recommendations(analytics),
-            "content_types": [ct.value for ct in ContentType],
-            "platforms": list(PLATFORM_LIMITS.keys())
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Analytics failed: {str(e)}")
-
-
-# Content Type and Platform Management
-@router.get("/content-types")
-def get_content_types():
-    """Get available content types for editing projects"""
-    return {
-        "content_types": [
-            {
-                "value": ct.value,
-                "name": ct.value.replace("_", " ").title(),
-                "description": _get_content_type_description(ct)
-            }
-            for ct in ContentType
-        ]
-    }
-
-
-@router.get("/platforms")
-def get_supported_platforms():
-    """Get supported platforms with their specifications"""
-    from app.services.editor import PLATFORM_LIMITS
-    
-    return {
-        "platforms": [
-            {
-                "platform": platform,
-                "max_duration": limits["max_duration"],
-                "ideal_clips": limits["ideal_clips"],
-                "max_clip_duration": limits["max_clip_duration"],
-                "recommended_for": _get_platform_recommendation(platform)
-            }
-            for platform, limits in PLATFORM_LIMITS.items()
-        ]
-    }
-
-
-# Advanced Editing Features
 @router.post("/{video_id}/regenerate")
 def regenerate_timeline(
     video_id: int,
@@ -266,13 +165,11 @@ def regenerate_timeline(
     
     editor = VideoEditor(db)
     
-    # Determine content type
     try:
         content_enum = ContentType(content_type) if content_type else ContentType.PODCAST_HIGHLIGHTS
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid content type: {content_type}")
     
-    # Create new project with updated parameters
     project = editor.create_project(
         name=f"Video_{video_id}_regenerated",
         content_type=content_enum,
@@ -286,62 +183,3 @@ def regenerate_timeline(
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Regeneration failed: {str(e)}")
-
-
-# Helper Functions
-def _generate_content_recommendations(analytics: Dict[str, Any]) -> Dict[str, Any]:
-    """Generate content recommendations based on analytics"""
-    recommendations = {
-        "suitable_for_editing": analytics.get("usable_clips", 0) > 3,
-        "estimated_quality": "high" if analytics.get("average_score", 0) > 5.0 else "medium",
-        "recommended_duration": min(analytics.get("total_duration", 0) * 0.2, 60.0),
-        "best_content_type": "podcast_highlights",  # Default
-        "editing_tips": []
-    }
-    
-    # Dynamic recommendations based on content
-    if analytics.get("content_density", 0) > 0.6:
-        recommendations["editing_tips"].append("High content density - consider multiple short clips")
-    
-    if analytics.get("high_quality_clips", 0) > 5:
-        recommendations["editing_tips"].append("Multiple high-quality moments available")
-    
-    return recommendations
-
-
-def _generate_multi_video_recommendations(analytics: Dict[str, Any]) -> Dict[str, Any]:
-    """Generate recommendations for multi-video projects"""
-    return {
-        "feasible": analytics.get("high_quality_clips", 0) > 5,
-        "estimated_quality": "high" if analytics.get("average_quality", 0) > 4.0 else "medium",
-        "recommended_clips": analytics.get("recommended_highlights", 6),
-        "content_strategy": "chronological" if analytics.get("source_videos", 0) > 3 else "best_moments",
-        "platform_recommendations": [
-            "youtube_shorts" if analytics.get("estimated_output_duration", 0) > 30 else "tiktok"
-        ]
-    }
-
-
-def _get_content_type_description(content_type: ContentType) -> str:
-    """Get user-friendly description for content types"""
-    descriptions = {
-        ContentType.PODCAST_HIGHLIGHTS: "Extract key insights and memorable moments from podcasts",
-        ContentType.INTERVIEW_CLIPS: "Create engaging clips from interviews and conversations",
-        ContentType.EDUCATIONAL_SUMMARY: "Transform educational content into digestible segments",
-        ContentType.ENTERTAINMENT_COMPILATION: "Compile entertaining moments for viral content",
-        ContentType.PRODUCT_DEMO: "Showcase product features and demonstrations",
-        ContentType.TESTIMONIAL_REEL: "Compile customer testimonials and reviews",
-        ContentType.EVENT_HIGHLIGHTS: "Create highlight reels from events and presentations"
-    }
-    return descriptions.get(content_type, "Professional content editing")
-
-
-def _get_platform_recommendation(platform: str) -> str:
-    """Get platform-specific recommendations"""
-    recommendations = {
-        "youtube_shorts": "Best for educational and interview content",
-        "tiktok": "Optimized for viral, entertainment-focused content",
-        "instagram_reels": "Great for lifestyle, product demos, and testimonials",
-        "custom": "Flexible format for any use case"
-    }
-    return recommendations.get(platform, "General purpose platform")
