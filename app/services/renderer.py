@@ -5,33 +5,28 @@ import logging
 import os
 import subprocess
 import tempfile
-import re
 from dataclasses import dataclass, field, asdict
 from enum import Enum
-from typing import List, Dict, Optional, Iterable, Tuple, Any
+from typing import List, Dict, Optional, Iterable, Any
 
 logger = logging.getLogger(__name__)
 
 
 class VideoFormat(Enum):
-    """Supported video output formats optimized for viral platforms"""
-    PORTRAIT = {"width": 1080, "height": 1920, "name": "9x16", "ratio": "9:16", "platform": "TikTok/Reels"}
-    LANDSCAPE = {"width": 1920, "height": 1080, "name": "16x9", "ratio": "16:9", "platform": "YouTube"}
-    SQUARE = {"width": 1080, "height": 1080, "name": "1x1", "ratio": "1:1", "platform": "Instagram"}
+    """Supported video output formats"""
+    PORTRAIT = {"width": 1080, "height": 1920, "name": "9x16", "ratio": "9:16"}
+    LANDSCAPE = {"width": 1920, "height": 1080, "name": "16x9", "ratio": "16:9"}
+    SQUARE = {"width": 1080, "height": 1080, "name": "1x1", "ratio": "1:1"}
 
 
 @dataclass
 class VideoClip:
+    """Simple video clip with timing information"""
     source_video: str
-    start_frame: int
-    end_frame: int
     start_time: float
     end_time: float
     duration: float
-    metadata: Dict = field(default_factory=dict)   
-    transcript: str = ""
-    relevance_score: float = 0.0
-    viral_score: float = 0.0
+    metadata: Dict = field(default_factory=dict)
 
 
 class Timeline:
@@ -48,18 +43,11 @@ class Timeline:
             self.clips.insert(position, clip)
         self._update_timeline()
 
-    def reorder_clips(self, new_order: Iterable[int]) -> None:
-        order = [i for i in new_order if 0 <= i < len(self.clips)]
-        self.clips = [self.clips[i] for i in order]
-        self._update_timeline()
-
     def _update_timeline(self) -> None:
         self.total_duration = sum(float(c.duration) for c in self.clips)
 
-    def optimize_for_viral(self, max_duration: float = 59.0) -> None:
-        """Optimize timeline for viral content"""
-        self.clips.sort(key=lambda c: c.viral_score, reverse=True)
-        
+    def optimize_for_duration(self, max_duration: float = 59.0) -> None:
+        """Trim timeline to fit within maximum duration"""
         current_duration = 0.0
         optimized_clips = []
         
@@ -67,7 +55,8 @@ class Timeline:
             if current_duration + clip.duration <= max_duration:
                 optimized_clips.append(clip)
                 current_duration += clip.duration
-            elif max_duration - current_duration > 0.5:  
+            elif max_duration - current_duration > 0.5:
+                # Trim the last clip to fit
                 remaining_time = max_duration - current_duration
                 clip.end_time = clip.start_time + remaining_time
                 clip.duration = remaining_time
@@ -80,7 +69,7 @@ class Timeline:
         self._update_timeline()
         logger.info(f"Optimized timeline: {len(self.clips)} clips, {self.total_duration:.1f}s")
 
-    def to_edl(self) -> Dict:
+    def to_dict(self) -> Dict:
         return {
             "timeline": {
                 "fps": self.target_fps,
@@ -89,23 +78,21 @@ class Timeline:
             }
         }
 
-    def export_edl(self, filename: str) -> None:
+    def export_json(self, filename: str) -> None:
         with open(filename, "w", encoding="utf-8") as f:
-            json.dump(self.to_edl(), f, indent=2)
+            json.dump(self.to_dict(), f, indent=2)
 
-    def import_edl(self, filename: str) -> None:
+    def import_json(self, filename: str) -> None:
         with open(filename, "r", encoding="utf-8") as f:
-            edl_data = json.load(f)
-        t = edl_data["timeline"]
+            data = json.load(f)
+        t = data["timeline"]
         self.target_fps = float(t.get("fps", 30.0))
         self.clips = [VideoClip(**c) for c in t.get("clips", [])]
         self._update_timeline()
 
 
-class FFmpegRenderer:
-    """
-    FFmpeg-based video renderer with FIXED auto-captions.
-    """
+class VideoRenderer:
+    """High-quality FFmpeg video renderer focused on stability"""
     
     def __init__(self, timeline: Timeline):
         self.timeline = timeline
@@ -115,46 +102,37 @@ class FFmpegRenderer:
                     output_path: str,
                     video_format: VideoFormat = VideoFormat.PORTRAIT,
                     quality: str = "high",
-                    use_gpu: bool = False,
-                    auto_captions: bool = True,  
-                    caption_style: Optional[Dict[str, str]] = None) -> None:
+                    use_gpu: bool = False) -> None:
+        """Render video with maximum quality and stability"""
         if not self.timeline.clips:
             raise RuntimeError("Timeline has no clips to render.")
-
-        self.timeline.optimize_for_viral()
 
         with tempfile.TemporaryDirectory() as temp_dir:
             self.temp_dir = temp_dir
             
             try:
                 logger.info(f"Rendering {len(self.timeline.clips)} clips to {video_format.value['name']} format")
-                
-                intermediate_path = os.path.join(temp_dir, "video_no_subs.mp4")
-                self._render_base_video(intermediate_path, video_format, quality, use_gpu)
-                
-                if auto_captions:
-                    self._add_captions_to_video(intermediate_path, output_path, caption_style or {})
-                else:
-                    import shutil
-                    shutil.copy2(intermediate_path, output_path)
-                
+                self._render_final_video(output_path, video_format, quality, use_gpu)
                 logger.info(f"Video rendered successfully: {output_path}")
                 
             except Exception as e:
-                logger.error(f"FFmpeg rendering failed: {e}")
+                logger.error(f"Rendering failed: {e}")
                 raise
 
-    def _render_base_video(self, output_path: str, video_format: VideoFormat, quality: str, use_gpu: bool) -> None:
+    def _render_final_video(self, output_path: str, video_format: VideoFormat, quality: str, use_gpu: bool) -> None:
+        """Render final video using FFmpeg concat demuxer for maximum stability"""
         
+        # Prepare segments
         segment_files = self._prepare_segments()
-        
         if not segment_files:
             raise RuntimeError("No valid segments to render")
         
+        # Create concat file
         concat_file = os.path.join(self.temp_dir, "concat_list.txt")
         self._create_concat_file(segment_files, concat_file)
         
-        cmd = self._build_base_ffmpeg_command(
+        # Build and execute FFmpeg command
+        cmd = self._build_ffmpeg_command(
             concat_file=concat_file,
             output_path=output_path,
             video_format=video_format,
@@ -175,12 +153,13 @@ class FFmpegRenderer:
             
             segment_file = os.path.join(self.temp_dir, f"segment_{i:03d}.mp4")
             
+            # Extract segment with high precision
             cmd = [
                 "ffmpeg", "-y", "-loglevel", "error",
                 "-ss", f"{clip.start_time:.3f}",
                 "-i", clip.source_video,
                 "-t", f"{clip.duration:.3f}",
-                "-c:v", "libx264", "-preset", "ultrafast", 
+                "-c:v", "libx264", "-preset", "ultrafast",
                 "-c:a", "aac",
                 "-avoid_negative_ts", "make_zero",
                 "-fflags", "+genpts",
@@ -192,174 +171,78 @@ class FFmpegRenderer:
                 segment_files.append(segment_file)
                 logger.debug(f"Created segment {i}: {clip.duration:.2f}s")
             except subprocess.CalledProcessError as e:
-                logger.error(f"Failed to create segment {i}: {e.stderr if e.stderr else e}")
+                logger.error(f"Failed to create segment {i}: {e}")
                 continue
         
         return segment_files
 
     def _create_concat_file(self, segment_files: List[str], concat_file: str) -> None:
-        """Create FFmpeg concat file for seamless joining"""
+        """Create FFmpeg concat file"""
         with open(concat_file, 'w', encoding='utf-8') as f:
             for segment in segment_files:
                 abs_path = os.path.abspath(segment).replace('\\', '/')
                 f.write(f"file '{abs_path}'\n")
 
-    def _build_base_ffmpeg_command(self,
-                                  concat_file: str,
-                                  output_path: str,
-                                  video_format: VideoFormat,
-                                  quality: str,
-                                  use_gpu: bool) -> List[str]:
-        """Build FFmpeg command for base video without captions"""
+    def _build_ffmpeg_command(self,
+                             concat_file: str,
+                             output_path: str,
+                             video_format: VideoFormat,
+                             quality: str,
+                             use_gpu: bool) -> List[str]:
+        """Build optimized FFmpeg command for high quality output"""
         
         cmd = ["ffmpeg", "-y", "-loglevel", "info"]
         
+        # Input
         cmd.extend(["-f", "concat", "-safe", "0", "-i", concat_file])
         
+        # Video processing
         format_info = video_format.value
         width = format_info["width"]
         height = format_info["height"]
         
-        filters = []
-        
-        filters.append(f"scale={width}:{height}:force_original_aspect_ratio=increase")
-        filters.append(f"crop={width}:{height}")
-        
-        filters.append("unsharp=5:5:1.0:5:5:0.0")
-        
+        # Scaling and cropping filters
+        filters = [
+            f"scale={width}:{height}:force_original_aspect_ratio=increase",
+            f"crop={width}:{height}",
+            "unsharp=5:5:1.0:5:5:0.0"  # Light sharpening
+        ]
         cmd.extend(["-vf", ",".join(filters)])
         
+        # Video encoding
         if use_gpu:
             cmd.extend(["-c:v", "h264_nvenc"])
-            cmd.extend(["-preset", "p4"])  
-            cmd.extend(["-rc", "vbr"])
-            cmd.extend(["-cq", "20"])  
-            cmd.extend(["-b:v", "0"]) 
+            if quality == "high":
+                cmd.extend(["-preset", "p4", "-rc", "vbr", "-cq", "16"])
+            elif quality == "medium":
+                cmd.extend(["-preset", "p5", "-rc", "vbr", "-cq", "20"])
+            else:
+                cmd.extend(["-preset", "p6", "-rc", "vbr", "-cq", "24"])
         else:
             cmd.extend(["-c:v", "libx264"])
-            cmd.extend(["-preset", "medium"]) 
-            cmd.extend(["-crf", "20"])  
+            if quality == "high":
+                cmd.extend(["-preset", "slow", "-crf", "16"])
+            elif quality == "medium":
+                cmd.extend(["-preset", "medium", "-crf", "20"])
+            else:
+                cmd.extend(["-preset", "fast", "-crf", "24"])
         
-        cmd.extend(["-c:a", "aac", "-b:a", "192k", "-ar", "44100"])
+        # Audio encoding
+        cmd.extend(["-c:a", "aac", "-b:a", "192k", "-ar", "48000"])
         
-
+        # Output options for maximum compatibility
         cmd.extend([
-            "-movflags", "+faststart",  
-            "-pix_fmt", "yuv420p",      
+            "-movflags", "+faststart",
+            "-pix_fmt", "yuv420p",
             "-max_muxing_queue_size", "9999",
-            "-maxrate", "8000k",        
-            "-bufsize", "16000k"        
         ])
         
         cmd.append(output_path)
         return cmd
 
-    def _add_captions_to_video(self, input_path: str, output_path: str, caption_style: Dict[str, str]) -> None:
-        """Add captions to video using ASS subtitles for better control"""
-        
-        ass_file = os.path.join(self.temp_dir, "captions.ass")
-        self._create_ass_file(ass_file, caption_style)
-        
-        if not os.path.exists(ass_file):
-            logger.warning("No captions file created, copying video without captions")
-            import shutil
-            shutil.copy2(input_path, output_path)
-            return
-        
-        cmd = [
-            "ffmpeg", "-y", "-loglevel", "info",
-            "-i", input_path,
-            "-vf", f"ass='{ass_file.replace(chr(92), chr(47))}'", 
-            "-c:v", "libx264", "-preset", "medium", "-crf", "20",
-            "-c:a", "copy", 
-            "-movflags", "+faststart",
-            output_path
-        ]
-        
-        try:
-            self._execute_ffmpeg(cmd)
-            logger.info("Captions added successfully")
-        except Exception as e:
-            logger.error(f"Failed to add captions: {e}")
-            import shutil
-            shutil.copy2(input_path, output_path)
-
-    def _create_ass_file(self, ass_path: str, style: Dict[str, str]) -> None:
-        """Create ASS subtitle file with viral-optimized styling"""
-        
-        if not any(clip.transcript.strip() for clip in self.timeline.clips):
-            logger.warning("No transcripts found for captions")
-            return
-        
-        font_name = style.get("font", "Arial Bold")
-        font_size = int(style.get("size", "32"))  
-        font_color = self._color_to_ass_hex(style.get("color", "white"))
-        outline_color = self._color_to_ass_hex(style.get("outline", "black"))
-        outline_width = int(style.get("outline_width", "3"))
-        
-        ass_header = f"""[Script Info]
-Title: Auto-Generated Captions
-ScriptType: v4.00+
-
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{font_name},{font_size},{font_color},&H00000000,{outline_color},&H00000000,-1,0,0,0,100,100,0,0,1,{outline_width},0,2,10,10,30,1
-
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-"""
-
-        events = []
-        current_time = 0.0
-        
-        for clip in self.timeline.clips:
-            if not clip.transcript or not clip.transcript.strip():
-                current_time += clip.duration
-                continue
-            
-            start_time = current_time
-            end_time = current_time + clip.duration
-            
-            start_ass = self._seconds_to_ass_time(start_time)
-            end_ass = self._seconds_to_ass_time(end_time)
-            
-            text = self._optimize_caption_text(clip.transcript.strip())
-            
-            events.append(f"Dialogue: 0,{start_ass},{end_ass},Default,,0,0,0,,{text}")
-            current_time += clip.duration
-
-        with open(ass_path, 'w', encoding='utf-8') as f:
-            f.write(ass_header)
-            f.write('\n'.join(events))
-        
-        logger.info(f"Created ASS subtitle file with {len(events)} captions")
-
-    def _seconds_to_ass_time(self, seconds: float) -> str:
-        """Convert seconds to ASS time format (H:MM:SS.CC)"""
-        hours = int(seconds // 3600)
-        minutes = int((seconds % 3600) // 60)
-        secs = int(seconds % 60)
-        centisecs = int((seconds % 1) * 100)
-        return f"{hours}:{minutes:02d}:{secs:02d}.{centisecs:02d}"
-
-    def _color_to_ass_hex(self, color: str) -> str:
-        """Convert color name to ASS hex format (&Hbbggrr)"""
-        color_map = {
-            "white": "&H00FFFFFF",
-            "black": "&H00000000", 
-            "red": "&H000000FF",
-            "blue": "&H00FF0000",
-            "green": "&H0000FF00",
-            "yellow": "&H0000FFFF",
-            "orange": "&H0000A5FF",
-            "purple": "&H00FF00FF"
-        }
-        return color_map.get(color.lower(), "&H00FFFFFF")
-
     def _execute_ffmpeg(self, cmd: List[str]) -> None:
-        """Execute FFmpeg command with enhanced error handling"""
-        logger.info(f"Executing FFmpeg command...")
-        logger.debug(f"Full command: {' '.join(cmd)}")
+        """Execute FFmpeg command with error handling"""
+        logger.info("Executing FFmpeg command...")
         
         try:
             result = subprocess.run(
@@ -367,187 +250,51 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 check=True, 
                 capture_output=True, 
                 text=True,
-                timeout=1800  
+                timeout=3600
             )
             
             if result.stderr:
-                logger.debug(f"FFmpeg warnings: {result.stderr}")
+                logger.debug(f"FFmpeg output: {result.stderr}")
                 
         except subprocess.TimeoutExpired:
-            logger.error("FFmpeg rendering timed out")
-            raise RuntimeError("FFmpeg rendering timed out after 30 minutes")
+            raise RuntimeError("FFmpeg rendering timed out")
         except subprocess.CalledProcessError as e:
-            logger.error(f"FFmpeg error (code {e.returncode}): {e.stderr}")
+            logger.error(f"FFmpeg error: {e.stderr}")
             raise RuntimeError(f"FFmpeg rendering failed: {e.stderr}")
 
 
-CAPTION_STYLES = {
-    "tiktok": {
-        "font": "Arial Bold",
-        "size": "36",
-        "color": "white", 
-        "outline": "black",
-        "outline_width": "3"
-    },
-    "instagram": {
-        "font": "Helvetica Bold",
-        "size": "32",
-        "color": "white",
-        "outline": "black", 
-        "outline_width": "2"
-    },
-    "youtube": {
-        "font": "Roboto Bold",
-        "size": "28",
-        "color": "yellow",
-        "outline": "black",
-        "outline_width": "2"
-    },
-    "professional": {
-        "font": "Arial",
-        "size": "24",
-        "color": "white",
-        "outline": "black",
-        "outline_width": "1"
-    }
-}
-
-
-class VideoRenderer(FFmpegRenderer):
-    """Specialized renderer for viral short-form content"""
-    
-    def __init__(self, timeline: Timeline):
-        super().__init__(timeline)
-        
-    def render_viral_clip(self,
-                         output_path: str,
-                         platform: str = "tiktok",
-                         quality: str = "high",
-                         use_gpu: bool = False) -> None:
-        """Render optimized for specific viral platform"""
-        
-        platform_settings = {
-            "tiktok": {
-                "format": VideoFormat.PORTRAIT,
-                "caption_style": CAPTION_STYLES["tiktok"],
-                "max_duration": 60.0
-            },
-            "instagram": {
-                "format": VideoFormat.PORTRAIT,
-                "caption_style": CAPTION_STYLES["instagram"], 
-                "max_duration": 60.0
-            },
-            "youtube": {
-                "format": VideoFormat.PORTRAIT,
-                "caption_style": CAPTION_STYLES["youtube"],
-                "max_duration": 60.0
-            },
-        }
-        
-        settings = platform_settings.get(platform, platform_settings["tiktok"])
-        
-        self.timeline.optimize_for_viral(settings["max_duration"])
-        
-        self.render_video(
-            output_path=output_path,
-            video_format=settings["format"],
-            quality=quality,
-            use_gpu=use_gpu,
-            auto_captions=True,
-            caption_style=settings["caption_style"]
-        )
-
-
-class VideoCompiler(VideoRenderer):    
-    def render_with_moviepy(self, *args, **kwargs):
-        """Legacy method - redirects to optimized viral renderer"""
-        logger.warning("render_with_moviepy is deprecated, using VideoRenderer instead")
-        
-        output_path = kwargs.get('output_path')
-        quality = kwargs.get('quality', 'high')
-        use_gpu = kwargs.get('use_gpu', False)
-        video_format = kwargs.get('video_format', VideoFormat.PORTRAIT)
-        auto_captions = kwargs.get('auto_captions', True)
-        caption_style = kwargs.get('caption_style', CAPTION_STYLES["tiktok"])
-        
-        return self.render_video(
-            output_path=output_path,
-            quality=quality,
-            use_gpu=use_gpu,
-            video_format=video_format,
-            auto_captions=auto_captions,
-            caption_style=caption_style
-        )
-
-
-def check_ffmpeg_capabilities() -> Dict[str, Any]:
-    """Enhanced FFmpeg capability detection"""
+def check_ffmpeg_available() -> bool:
+    """Check if FFmpeg is available and working"""
     try:
         result = subprocess.run(
             ["ffmpeg", "-version"], 
             capture_output=True, 
-            text=True, 
             timeout=10
         )
-        
-        if result.returncode != 0:
-            return {"available": False, "error": "FFmpeg not working"}
-        
-        output = result.stdout.lower()
-        
-        capabilities = {
-            "available": True,
-            "version": result.stdout.split('\n')[0],
-            "codecs": {
-                "h264": "libx264" in output,
-                "h264_nvenc": "h264_nvenc" in output,
-                "aac": "aac" in output
-            },
-            "filters": {
-                "scale": "scale" in output,
-                "crop": "crop" in output, 
-                "ass": "ass" in output or "subtitles" in output,
-                "unsharp": "unsharp" in output
-            },
-            "formats": {
-                "mp4": "mp4" in output,
-                "concat": True  
-            }
-        }
-        
-        gpu_check = subprocess.run(
-            ["ffmpeg", "-hide_banner", "-encoders"], 
-            capture_output=True, 
-            text=True, 
-            timeout=5
-        )
-        
-        if gpu_check.returncode == 0:
-            encoders = gpu_check.stdout.lower()
-            capabilities["gpu"] = {
-                "nvenc_available": "h264_nvenc" in encoders,
-                "vaapi_available": "h264_vaapi" in encoders,
-                "qsv_available": "h264_qsv" in encoders
-            }
-        
-        return capabilities
-        
-    except Exception as e:
-        logger.error(f"FFmpeg capability check failed: {e}")
-        return {"available": False, "error": str(e)}
+        return result.returncode == 0
+    except Exception:
+        return False
 
 
-def optimize_ffmpeg_for_viral() -> Dict[str, str]:
-    """Return optimized FFmpeg flags for content"""
+def get_quality_settings() -> Dict[str, Dict[str, Any]]:
+    """Get available quality settings"""
     return {
-        "video_codec": "libx264",
-        "preset": "medium", 
-        "crf": "20",  
-        "pixel_format": "yuv420p",
-        "audio_codec": "aac",
-        "audio_bitrate": "192k",
-        "max_bitrate": "8000k",
-        "buffer_size": "16000k",
-        "movflags": "+faststart",
-        "keyframe_interval": "2",  
+        "high": {
+            "description": "Highest quality, slower render",
+            "crf_cpu": 16,
+            "crf_gpu": 16,
+            "preset_cpu": "slow"
+        },
+        "medium": {
+            "description": "Balanced quality and speed", 
+            "crf_cpu": 20,
+            "crf_gpu": 20,
+            "preset_cpu": "medium"
+        },
+        "low": {
+            "description": "Faster render, lower quality",
+            "crf_cpu": 24,
+            "crf_gpu": 24, 
+            "preset_cpu": "fast"
+        }
     }

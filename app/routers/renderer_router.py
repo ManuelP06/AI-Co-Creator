@@ -1,10 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, Body, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 from pydantic import BaseModel, Field
 import os
-import asyncio
 from datetime import datetime
 import logging
 
@@ -16,8 +15,8 @@ from app.services.renderer import (
     VideoClip,
     VideoRenderer,
     VideoFormat,
-    CAPTION_STYLES,
-    check_ffmpeg_capabilities
+    check_ffmpeg_available,
+    get_quality_settings
 )
 from app.services.editor import get_timeline_json
 from app import models
@@ -31,34 +30,12 @@ render_jobs: Dict[str, Dict[str, Any]] = {}
 
 
 class RenderRequest(BaseModel):
-    """Request model for video rendering"""
+    """Simple render request model"""
     output_filename: Optional[str] = Field(None, description="Custom output filename")
-    platform: str = Field(default="youtube_shorts", description="Target platform")
-    quality: str = Field(default="high", description="Render quality (high/medium/low)")
-    use_gpu: bool = Field(default=False, description="Use GPU acceleration if available")
-    auto_captions: bool = Field(default=True, description="Add automatic captions")
-    caption_style: Optional[str] = Field(default=None, description="Caption style preset")
-
-
-class BatchRenderRequest(BaseModel):
-    """Request model for batch rendering multiple videos"""
-    video_ids: List[int] = Field(..., description="List of video IDs to render")
-    platform: str = Field(default="youtube_shorts", description="Target platform")
-    quality: str = Field(default="high", description="Render quality")
+    video_format: str = Field(default="portrait", description="Video format: portrait, landscape, square")
+    quality: str = Field(default="high", description="Render quality: high, medium, low")
     use_gpu: bool = Field(default=False, description="Use GPU acceleration")
-    auto_captions: bool = Field(default=True, description="Add automatic captions")
-
-
-class RenderResponse(BaseModel):
-    """Response model for render operations"""
-    job_id: str
-    status: str
-    video_id: int
-    output_path: Optional[str] = None
-    filename: Optional[str] = None
-    duration: Optional[float] = None
-    platform: str
-    created_at: datetime
+    max_duration: Optional[float] = Field(default=59.0, description="Maximum video duration in seconds")
 
 
 @router.post("/{video_id}/render")
@@ -68,12 +45,9 @@ def render_video(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db)
 ):
-    """
-    Render a video timeline to final output.
+    """Render a video timeline to final output with maximum quality"""
     
-    Creates a edited short-form video optimized for the target platform.
-    Supports GPU acceleration and automatic captions for maximum engagement.
-    """
+    # Validate video exists
     video = db.query(models.Video).filter(models.Video.id == video_id).first()
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
@@ -84,8 +58,16 @@ def render_video(
             detail="No timeline found. Please create an edit plan first."
         )
     
+    # Validate FFmpeg
+    if not check_ffmpeg_available():
+        raise HTTPException(
+            status_code=500,
+            detail="FFmpeg not available. Please install FFmpeg."
+        )
+    
+    # Create job
     job_id = f"render_{video_id}_{int(datetime.now().timestamp())}"
-    output_filename = request.output_filename or f"video_{video_id}_{request.platform}.mp4"
+    output_filename = request.output_filename or f"video_{video_id}_{request.video_format}.mp4"
     output_path = os.path.join(OUTPUT_DIR, output_filename)
     
     render_jobs[job_id] = {
@@ -93,11 +75,17 @@ def render_video(
         "video_id": video_id,
         "output_path": output_path,
         "filename": output_filename,
-        "platform": request.platform,
         "created_at": datetime.now(),
-        "progress": 0
+        "progress": 0,
+        "settings": {
+            "video_format": request.video_format,
+            "quality": request.quality,
+            "use_gpu": request.use_gpu,
+            "max_duration": request.max_duration
+        }
     }
     
+    # Start background rendering
     background_tasks.add_task(
         _render_video_background,
         job_id=job_id,
@@ -106,22 +94,18 @@ def render_video(
         db=db
     )
     
-    return RenderResponse(
-        job_id=job_id,
-        status="queued",
-        video_id=video_id,
-        platform=request.platform,
-        created_at=datetime.now()
-    )
+    return {
+        "job_id": job_id,
+        "status": "queued",
+        "video_id": video_id,
+        "output_filename": output_filename,
+        "created_at": datetime.now()
+    }
 
 
 @router.get("/{video_id}/render/{job_id}/status")
 def get_render_status(video_id: int, job_id: str):
-    """
-    Get rendering job status.
-    
-    Returns current status, progress, and completion details for a render job.
-    """
+    """Get rendering job status"""
     if job_id not in render_jobs:
         raise HTTPException(status_code=404, detail="Render job not found")
     
@@ -137,70 +121,14 @@ def get_render_status(video_id: int, job_id: str):
         "filename": job.get("filename"),
         "error": job.get("error"),
         "completed_at": job.get("completed_at"),
-        "duration": job.get("duration")
-    }
-
-
-@router.post("/batch/render")
-def batch_render_videos(
-    request: BatchRenderRequest,
-    background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db)
-):
-    """
-    Render multiple videos in batch.
-    
-    Efficiently processes multiple videos with the same settings.
-    Returns batch job ID for tracking progress.
-    """
-    for video_id in request.video_ids:
-        video = db.query(models.Video).filter(models.Video.id == video_id).first()
-        if not video:
-            raise HTTPException(status_code=404, detail=f"Video {video_id} not found")
-        if not video.timeline_json:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Video {video_id} has no timeline. Create edit plan first."
-            )
-    
-    batch_job_id = f"batch_{int(datetime.now().timestamp())}"
-    
-    job_ids = []
-    for video_id in request.video_ids:
-        job_id = f"render_{video_id}_{int(datetime.now().timestamp())}"
-        
-        render_request = RenderRequest(
-            platform=request.platform,
-            quality=request.quality,
-            use_gpu=request.use_gpu,
-            auto_captions=request.auto_captions
-        )
-        
-        background_tasks.add_task(
-            _render_video_background,
-            job_id=job_id,
-            video_id=video_id,
-            request=render_request,
-            db=db
-        )
-        
-        job_ids.append(job_id)
-    
-    return {
-        "batch_job_id": batch_job_id,
-        "individual_jobs": job_ids,
-        "total_videos": len(request.video_ids),
-        "status": "queued"
+        "duration": job.get("duration"),
+        "settings": job.get("settings", {})
     }
 
 
 @router.get("/download/{filename}")
-def download_rendered_video(filename: str):
-    """
-    Download rendered video file.
-    
-    Serves the final rendered video for download.
-    """
+def download_video(filename: str):
+    """Download rendered video file"""
     file_path = os.path.join(OUTPUT_DIR, filename)
     
     if not os.path.exists(file_path):
@@ -217,15 +145,8 @@ def download_rendered_video(filename: str):
 
 
 @router.get("/outputs")
-def list_rendered_videos(
-    limit: int = Query(default=20, le=100),
-    offset: int = Query(default=0, ge=0)
-):
-    """
-    List all rendered video files.
-    
-    Returns paginated list of available rendered videos.
-    """
+def list_outputs():
+    """List all rendered video files"""
     try:
         files = []
         for filename in os.listdir(OUTPUT_DIR):
@@ -237,39 +158,22 @@ def list_rendered_videos(
                     "filename": filename,
                     "size_mb": round(stat.st_size / (1024 * 1024), 2),
                     "created_at": datetime.fromtimestamp(stat.st_ctime),
-                    "modified_at": datetime.fromtimestamp(stat.st_mtime)
                 })
         
         files.sort(key=lambda x: x["created_at"], reverse=True)
+        return {"files": files}
         
-        total = len(files)
-        files = files[offset:offset + limit]
-        
-        return {
-            "files": files,
-            "total": total,
-            "limit": limit,
-            "offset": offset,
-            "has_more": offset + len(files) < total
-        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to list files: {str(e)}")
 
 
 @router.delete("/outputs/{filename}")
-def delete_rendered_video(filename: str):
-    """
-    Delete a rendered video file.
-    
-    Removes the specified file from the output directory.
-    """
+def delete_output(filename: str):
+    """Delete a rendered video file"""
     file_path = os.path.join(OUTPUT_DIR, filename)
     
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found")
-    
-    if not filename.endswith(('.mp4', '.mov', '.avi')):
-        raise HTTPException(status_code=400, detail="Invalid file type")
     
     try:
         os.remove(file_path)
@@ -278,38 +182,34 @@ def delete_rendered_video(filename: str):
         raise HTTPException(status_code=500, detail=f"Failed to delete file: {str(e)}")
 
 
-@router.get("/capabilities")
-def get_rendering_capabilities():
-    """
-    Get system rendering capabilities.
-    
-    Returns information about available codecs, GPU support, and system specs.
-    """
-    try:
-        capabilities = check_ffmpeg_capabilities()
-        
-        return {
-            "ffmpeg": capabilities,
-            "supported_formats": [
-                {
-                    "name": fmt.name,
-                    "value": fmt.value,
-                    "resolution": f"{fmt.value['width']}x{fmt.value['height']}",
-                    "aspect_ratio": fmt.value["ratio"],
-                    "platform": fmt.value["platform"]
-                }
-                for fmt in VideoFormat
-            ],
-            "caption_styles": list(CAPTION_STYLES.keys()),
-            "quality_options": ["high", "medium", "low"],
-            "output_directory": OUTPUT_DIR
-        }
-    except Exception as e:
-        return {
-            "error": f"Failed to check capabilities: {str(e)}",
-            "ffmpeg": {"available": False}
-        }
+@router.get("/system")
+def get_system_info():
+    """Get system capabilities and settings"""
+    return {
+        "ffmpeg_available": check_ffmpeg_available(),
+        "video_formats": [
+            {
+                "name": fmt.name.lower(),
+                "resolution": f"{fmt.value['width']}x{fmt.value['height']}",
+                "aspect_ratio": fmt.value["ratio"]
+            }
+            for fmt in VideoFormat
+        ],
+        "quality_settings": get_quality_settings(),
+        "output_directory": OUTPUT_DIR
+    }
 
+
+@router.get("/jobs")
+def list_jobs():
+    """List all render jobs"""
+    jobs = list(render_jobs.values())
+    jobs.sort(key=lambda x: x.get("created_at", datetime.min), reverse=True)
+    
+    return {
+        "jobs": jobs,
+        "total": len(jobs)
+    }
 
 
 async def _render_video_background(
@@ -318,13 +218,16 @@ async def _render_video_background(
     request: RenderRequest,
     db: Session
 ):
-    """Background task for video rendering"""
+    """Background video rendering task"""
     try:
         render_jobs[job_id]["status"] = "processing"
         render_jobs[job_id]["progress"] = 10
         
+        # Get timeline data
         timeline_data = get_timeline_json(db, video_id)
+        render_jobs[job_id]["progress"] = 20
         
+        # Build timeline
         timeline = Timeline()
         
         for item in timeline_data.get("items", []):
@@ -334,50 +237,49 @@ async def _render_video_background(
             
             video_clip = VideoClip(
                 source_video=shot.video.file_path,
-                start_frame=0,  
-                end_frame=0,    
                 start_time=item["start_time"],
                 end_time=item["end_time"],
                 duration=item["end_time"] - item["start_time"],
-                transcript=shot.transcript or "",
-                metadata={"highlight_reason": item.get("highlight_reason", "")}
+                metadata={"reason": item.get("highlight_reason", "")}
             )
             timeline.add_clip(video_clip)
         
-        render_jobs[job_id]["progress"] = 30
+        render_jobs[job_id]["progress"] = 40
         
-        renderer = VideoRenderer(timeline)
+        # Optimize timeline duration
+        if request.max_duration:
+            timeline.optimize_for_duration(request.max_duration)
         
-        output_path = render_jobs[job_id]["output_path"]
+        # Map format
+        format_map = {
+            "portrait": VideoFormat.PORTRAIT,
+            "landscape": VideoFormat.LANDSCAPE, 
+            "square": VideoFormat.SQUARE
+        }
+        video_format = format_map.get(request.video_format, VideoFormat.PORTRAIT)
         
         render_jobs[job_id]["progress"] = 50
         
-        if request.platform in ["tiktok", "instagram", "youtube_shorts"]:
-            renderer.render_viral_clip(
-                output_path=output_path,
-                platform=request.platform,
-                quality=request.quality,
-                use_gpu=request.use_gpu
-            )
-        else:
-            video_format = VideoFormat.PORTRAIT  # Default
-            caption_style = CAPTION_STYLES.get(request.caption_style, CAPTION_STYLES["professional"])
-            
-            renderer.render_video(
-                output_path=output_path,
-                video_format=video_format,
-                quality=request.quality,
-                use_gpu=request.use_gpu,
-                auto_captions=request.auto_captions,
-                caption_style=caption_style
-            )
+        # Render video
+        renderer = VideoRenderer(timeline)
+        output_path = render_jobs[job_id]["output_path"]
         
+        renderer.render_video(
+            output_path=output_path,
+            video_format=video_format,
+            quality=request.quality,
+            use_gpu=request.use_gpu
+        )
+        
+        # Success
         render_jobs[job_id].update({
             "status": "completed",
             "progress": 100,
             "completed_at": datetime.now(),
             "duration": timeline.total_duration
         })
+        
+        logger.info(f"Render job {job_id} completed successfully")
         
     except Exception as e:
         render_jobs[job_id].update({
@@ -386,52 +288,3 @@ async def _render_video_background(
             "completed_at": datetime.now()
         })
         logger.error(f"Render job {job_id} failed: {e}")
-
-
-@router.get("/jobs")
-def list_render_jobs(
-    status: Optional[str] = Query(None, description="Filter by status"),
-    limit: int = Query(default=20, le=100)
-):
-    """
-    List rendering jobs with optional status filtering.
-    
-    Shows current and completed render jobs for monitoring.
-    """
-    jobs = list(render_jobs.values())
-    
-    if status:
-        jobs = [job for job in jobs if job.get("status") == status]
-    
-    jobs.sort(key=lambda x: x.get("created_at", datetime.min), reverse=True)
-    
-    jobs = jobs[:limit]
-    
-    return {
-        "jobs": jobs,
-        "total": len(jobs),
-        "statuses": list(set(job.get("status", "unknown") for job in render_jobs.values()))
-    }
-
-
-@router.get("/jobs/{job_id}")
-def get_job_status(job_id: str):
-    """
-    Get detailed status for a specific render job.
-    
-    Returns comprehensive information about job progress and results.
-    """
-    if job_id not in render_jobs:
-        raise HTTPException(status_code=404, detail="Job not found")
-    
-    job = render_jobs[job_id]
-    
-    if job["status"] == "completed" and job.get("output_path"):
-        if os.path.exists(job["output_path"]):
-            stat = os.stat(job["output_path"])
-            job["file_size_mb"] = round(stat.st_size / (1024 * 1024), 2)
-        else:
-            job["status"] = "failed"
-            job["error"] = "Output file not found"
-    
-    return job
