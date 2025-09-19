@@ -2,9 +2,9 @@ import os, uuid, shutil
 from fastapi import UploadFile, HTTPException
 from sqlalchemy.orm import Session
 from app import models, schemas
+from app.config import settings
 
-UPLOAD_DIR = "uploaded_videos"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+UPLOAD_DIR = settings.upload_directory
 
 async def handle_upload(username: str, file: UploadFile, db: Session):
     user = db.query(models.User).filter(models.User.username == username).first()
