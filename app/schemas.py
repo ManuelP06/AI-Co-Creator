@@ -1,13 +1,21 @@
 from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import List, Optional, Literal, Dict, Any
+from datetime import datetime
 from enum import Enum
 
 class UserBase(BaseModel):
     username: str
+    email: Optional[str] = None
+
+class UserCreate(UserBase):
+    password: str
 
 class UserResponse(UserBase):
     id: int
-    
+    is_active: bool
+    is_superuser: bool
+    created_at: Optional[datetime] = None
+
     class Config:
         from_attributes = True
 

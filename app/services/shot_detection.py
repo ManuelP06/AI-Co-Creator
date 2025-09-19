@@ -1,10 +1,23 @@
 from sqlalchemy.orm import Session
 from app.models import Shot
-import cv2
-from transnetv2_pytorch import TransNetV2
 import tempfile
 import subprocess
 import os
+
+# Conditional import with error handling
+try:
+    import cv2
+    CV2_AVAILABLE = True
+except ImportError as e:
+    print(f"OpenCV not available: {e}")
+    CV2_AVAILABLE = False
+
+try:
+    from transnetv2_pytorch import TransNetV2
+    TRANSNET_AVAILABLE = True
+except ImportError as e:
+    print(f"TransNetV2 not available: {e}")
+    TRANSNET_AVAILABLE = False
 
 _transnet_model = None
 

@@ -1,20 +1,82 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
-from app.database import Base, engine
-from app.routers import upload_router
-from app.routers import shots_router
-from app.routers import analysis_router
-from app.routers import transcription_router 
-from app.routers import editor_router
-from app.routers import renderer_router
-Base.metadata.create_all(bind=engine)
+from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="winview.ai")
+from app.config import settings
+from app.core import setup_logging
+from app.core.middleware import (
+    LoggingMiddleware,
+    ExceptionHandlerMiddleware,
+    SecurityHeadersMiddleware
+)
+from app.core.cache import init_redis
+from app.routers import (
+    upload_router,
+    shots_router,
+    analysis_router,
+    transcription_router,
+    editor_router,
+    renderer_router,
+    auth_router,
+)
 
-app.include_router(upload_router.router)
-app.include_router(shots_router.router)
-app.include_router(transcription_router.router) 
-app.include_router(analysis_router.router) 
-app.include_router(editor_router.router)
-app.include_router(renderer_router.router)
-# uvicorn app.main:app --reload
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan manager."""
+    # Startup
+    setup_logging()
+    await init_redis()
+    yield
+    # Shutdown
+    pass
+
+
+app = FastAPI(
+    title=settings.api_title,
+    description=settings.api_description,
+    version=settings.api_version,
+    lifespan=lifespan,
+    docs_url="/docs" if settings.debug else None,
+    redoc_url="/redoc" if settings.debug else None,
+)
+
+# Add middleware
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(ExceptionHandlerMiddleware)
+app.add_middleware(LoggingMiddleware)
+
+# CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Configure appropriately for production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Include routers
+app.include_router(auth_router.router, prefix="/api/v1")
+app.include_router(upload_router.router, prefix="/api/v1")
+app.include_router(shots_router.router, prefix="/api/v1")
+app.include_router(transcription_router.router, prefix="/api/v1")
+app.include_router(analysis_router.router, prefix="/api/v1")
+app.include_router(editor_router.router, prefix="/api/v1")
+app.include_router(renderer_router.router, prefix="/api/v1")
+
+
+@app.get("/")
+async def root():
+    """Root endpoint."""
+    return {
+        "message": "AI Co-Creator API",
+        "version": settings.api_version,
+        "docs": "/docs" if settings.debug else "Documentation disabled in production",
+    }
+
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint."""
+    return {"status": "healthy", "version": settings.api_version}
 

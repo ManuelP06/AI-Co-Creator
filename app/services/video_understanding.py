@@ -1,14 +1,20 @@
-import os, gc, torch, sys
+import os
+import gc
+import torch
+import sys
+import traceback
 from typing import Tuple, Optional
 from transformers import AutoModelForCausalLM, AutoProcessor
-import psutil 
-import traceback
+import psutil
 from contextlib import contextmanager
 
-MODEL_NAME = "DAMO-NLP-SG/VideoLLaMA3-7B"
+from app.config import settings
+from app.core.logging_config import get_logger
+from app.services.gpu_manager import gpu_manager
 
-# Enhanced CUDA memory configuration for RTX 5080
-os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True,max_split_size_mb:512,garbage_collection_threshold:0.8")
+logger = get_logger("video_understanding")
+
+MODEL_NAME = settings.video_llama_model
 
 _model = None
 _processor = None
@@ -538,7 +544,7 @@ def run_video_analysis(db, video, per_shot: bool = True, prefer_gpu: bool = True
                         "Memory error", "Runtime error", "Processing failed", "Analysis failed",
                         "Model loading failed", "Validation failed"
                     ])):
-                    print(f"✅ Shot {i+1} already analyzed, skipping")
+                    print(f"Shot {i+1} already analyzed, skipping")
                     shot_count += 1
                     continue
                 
@@ -555,21 +561,21 @@ def run_video_analysis(db, video, per_shot: bool = True, prefer_gpu: bool = True
                     if analysis_result and len(analysis_result.strip()) > 10:
                         shot.analysis = analysis_result.strip()
                         shot_count += 1
-                        print(f"✅ Success: '{analysis_result[:50]}...'")
+                        print(f"Success: '{analysis_result[:50]}...'")
                     else:
                         shot.analysis = "Analysis produced empty or invalid result"
                         error_count += 1
-                        print(f"❌ Empty result for shot {i+1}")
+                        print(f"Empty result for shot {i+1}")
                     
                     db.add(shot)
                     
                     # Save progress more frequently
                     if (shot_count + error_count) % 2 == 0:
-                        print("💾 Saving progress...")
+                        print("Saving progress...")
                         db.commit()
                         
                 except Exception as e:
-                    print(f"❌ Error processing shot {i+1}: {e}")
+                    print(f"Error processing shot {i+1}: {e}")
                     shot.analysis = f"Processing failed: {str(e)[:100]}"
                     db.add(shot)
                     error_count += 1
@@ -579,30 +585,30 @@ def run_video_analysis(db, video, per_shot: bool = True, prefer_gpu: bool = True
                 
                 # More frequent cleanup for RTX 5080
                 if (shot_count + error_count) % 2 == 0:
-                    print("🧹 Periodic cleanup...")
+                    print("Periodic cleanup...")
                     aggressive_cleanup()
         
-        print("\n💾 Final save...")
+        print("\nFinal save...")
         db.commit()
         
-        print(f"\n🎬 Analysis Complete!")
-        print(f"✅ Successful: {shot_count}")
-        print(f"❌ Errors: {error_count}")
+        print(f"\nAnalysis Complete!")
+        print(f"Successful: {shot_count}")
+        print(f"Errors: {error_count}")
         success_rate = (shot_count/(shot_count+error_count)*100) if (shot_count+error_count) > 0 else 0
-        print(f"📊 Success rate: {success_rate:.1f}%")
+        print(f"Success rate: {success_rate:.1f}%")
         
         if error_count > 0:
-            print(f"💡 Tip: Consider running with force_cpu=True for problematic segments")
-            print(f"💡 Tip: Check video file integrity and segment boundaries")
+            print(f"Tip: Consider running with force_cpu=True for problematic segments")
+            print(f"Tip: Check video file integrity and segment boundaries")
         
     except Exception as e:
-        print(f"❌ Critical error in analysis pipeline: {e}")
+        print(f"Critical error in analysis pipeline: {e}")
         traceback.print_exc()
         db.rollback()
         raise
         
     finally:
-        print("🧹 Final cleanup...")
+        print("Final cleanup...")
         force_unload_all_models()
 
 def unload_model():
@@ -611,12 +617,12 @@ def unload_model():
 
 def force_cpu_analysis(db, video):
     """Force CPU-only analysis for maximum stability"""
-    print("🖥️  Running in CPU-only mode for maximum stability")
+    print("Running in CPU-only mode for maximum stability")
     return run_video_analysis(db, video, per_shot=True, prefer_gpu=False)
 
 def gpu_analysis_with_fallback(db, video):
     """GPU analysis with intelligent CPU fallback for RTX 5080"""
-    print("🚀 Running with GPU preference and automatic CPU fallback (RTX 5080 optimized)")
+    print("Running with GPU preference and automatic CPU fallback (RTX 5080 optimized)")
     return run_video_analysis(db, video, per_shot=True, prefer_gpu=True)
 
 def debug_shot_analysis(video_path: str, shot_index: int, shots_data):
@@ -626,9 +632,9 @@ def debug_shot_analysis(video_path: str, shot_index: int, shots_data):
         return
     
     shot = shots_data[shot_index]
-    print(f"🔍 Debug analysis for shot {shot_index + 1}")
-    print(f"📹 Video: {video_path}")
-    print(f"⏱️  Time: {shot['start_time']:.1f}s → {shot['end_time']:.1f}s")
+    print(f"Debug analysis for shot {shot_index + 1}")
+    print(f"Video: {video_path}")
+    print(f"⏱Time: {shot['start_time']:.1f}s → {shot['end_time']:.1f}s")
     
     # Try with minimal parameters
     result = analyze_shot(
@@ -636,7 +642,7 @@ def debug_shot_analysis(video_path: str, shot_index: int, shots_data):
         fps=0.1, max_frames=2, force_cpu=True
     )
     
-    print(f"🎯 Result: {result}")
+    print(f"Result: {result}")
     return result
 
 # Additional utility functions for troubleshooting
@@ -646,43 +652,43 @@ def check_system_resources():
     ram_info = psutil.virtual_memory()
     gpu_info = get_gpu_memory_info()
     
-    print("🖥️  System Resource Check:")
+    print("System Resource Check:")
     print(f"RAM: {ram_info.available / 1024**3:.1f}GB available / {ram_info.total / 1024**3:.1f}GB total ({ram_info.percent:.1f}% used)")
     
     if gpu_info:
         print(f"GPU: {gpu_info['free_gb']:.1f}GB free / {gpu_info['total_gb']:.1f}GB total ({gpu_info['utilization']:.1f}% used)")
         
         if gpu_info['free_gb'] < 8.0:
-            print("⚠️  Warning: Low GPU memory - recommend CPU mode")
+            print("Warning: Low GPU memory - recommend CPU mode")
         elif gpu_info['utilization'] > 90:
-            print("⚠️  Warning: High GPU utilization")
+            print("Warning: High GPU utilization")
         else:
-            print("✅ GPU memory looks good")
+            print("GPU memory looks good")
     else:
-        print("❌ No GPU detected")
+        print("No GPU detected")
     
     if ram_info.percent > 85:
-        print("⚠️  Warning: High RAM usage")
+        print("Warning: High RAM usage")
     else:
-        print("✅ RAM usage looks good")
+        print("RAM usage looks good")
 
 def test_model_loading():
     """Test model loading without video processing"""
-    print("🧪 Testing model loading...")
+    print("Testing model loading...")
     
     try:
         model, processor = _load_model_once(force_cpu=False)
-        print("✅ GPU model loading successful")
+        print("GPU model loading successful")
         force_unload_all_models()
         
         model, processor = _load_model_once(force_cpu=True)
-        print("✅ CPU model loading successful")
+        print("CPU model loading successful")
         force_unload_all_models()
         
-        print("✅ Model loading test passed")
+        print("Model loading test passed")
         return True
         
     except Exception as e:
-        print(f"❌ Model loading test failed: {e}")
+        print(f"Model loading test failed: {e}")
         traceback.print_exc()
         return False
