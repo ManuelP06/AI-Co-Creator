@@ -1,24 +1,16 @@
 from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.core import setup_logging
-from app.core.middleware import (
-    LoggingMiddleware,
-    ExceptionHandlerMiddleware,
-    SecurityHeadersMiddleware
-)
 from app.core.cache import init_redis
-from app.routers import (
-    upload_router,
-    shots_router,
-    analysis_router,
-    transcription_router,
-    editor_router,
-    renderer_router,
-    auth_router,
-)
+from app.core.middleware import (ExceptionHandlerMiddleware, LoggingMiddleware,
+                                 SecurityHeadersMiddleware)
+from app.routers import (analysis_router, editor_router, pipeline_router,
+                         renderer_router, shots_router, transcription_router,
+                         upload_router)
 
 
 @asynccontextmanager
@@ -56,13 +48,13 @@ app.add_middleware(
 )
 
 # Include routers
-app.include_router(auth_router.router, prefix="/api/v1")
 app.include_router(upload_router.router, prefix="/api/v1")
 app.include_router(shots_router.router, prefix="/api/v1")
 app.include_router(transcription_router.router, prefix="/api/v1")
 app.include_router(analysis_router.router, prefix="/api/v1")
 app.include_router(editor_router.router, prefix="/api/v1")
 app.include_router(renderer_router.router, prefix="/api/v1")
+app.include_router(pipeline_router.router, prefix="/api/v1")
 
 
 @app.get("/")
@@ -79,4 +71,3 @@ async def root():
 async def health_check():
     """Health check endpoint."""
     return {"status": "healthy", "version": settings.api_version}
-

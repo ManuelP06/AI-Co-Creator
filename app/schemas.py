@@ -1,32 +1,19 @@
-from pydantic import BaseModel, Field, field_validator, model_validator
-from typing import List, Optional, Literal, Dict, Any
 from datetime import datetime
 from enum import Enum
+from typing import Any, Dict, List, Literal, Optional
 
-class UserBase(BaseModel):
-    username: str
-    email: Optional[str] = None
+from pydantic import BaseModel, Field, field_validator, model_validator
 
-class UserCreate(UserBase):
-    password: str
-
-class UserResponse(UserBase):
-    id: int
-    is_active: bool
-    is_superuser: bool
-    created_at: Optional[datetime] = None
-
-    class Config:
-        from_attributes = True
 
 class VideoUploadResponse(BaseModel):
     video_id: int
     filename: str
     file_path: str
     file_size: int
-    
+
     class Config:
         from_attributes = True
+
 
 class ShotResponse(BaseModel):
     id: int
@@ -37,19 +24,25 @@ class ShotResponse(BaseModel):
     end_time: float
     transcript: Optional[str] = None
     analysis: Optional[str] = None
-    
+
     class Config:
         from_attributes = True
+
 
 class ShotListResponse(BaseModel):
     video_id: int
     shots: List[ShotResponse]
 
+
 class ContentType(str, Enum):
     INTERVIEW = "interview"
+    PODCAST = "podcast"
     EDUCATIONAL = "educational"
     ENTERTAINMENT = "entertainment"
     PRODUCT_DEMO = "product_demo"
+    MARKETING = "marketing"
+    TUTORIAL = "tutorial"
+
 
 class VideoClipSchema(BaseModel):
     id: int
@@ -61,14 +54,15 @@ class VideoClipSchema(BaseModel):
     transcript: str = ""
     summary: str = ""
     tags: List[str] = Field(default_factory=list)
-    
-    @model_validator(mode='after')
+
+    @model_validator(mode="after")
     def validate_times(self):
         if self.end_time <= self.start_time:
-            raise ValueError('end_time must be greater than start_time')
+            raise ValueError("end_time must be greater than start_time")
         if abs(self.duration - (self.end_time - self.start_time)) > 0.1:
-            raise ValueError('duration must match end_time - start_time')
+            raise ValueError("duration must match end_time - start_time")
         return self
+
 
 class TimelineItem(BaseModel):
     clip_id: int = Field(..., ge=0)
@@ -76,27 +70,31 @@ class TimelineItem(BaseModel):
     start_time: float = Field(..., ge=0.0)
     end_time: float = Field(..., gt=0.0)
     highlight_reason: str = ""
-    
-    @model_validator(mode='after')
+
+    @model_validator(mode="after")
     def validate_timeline_item(self):
         if self.end_time <= self.start_time:
-            raise ValueError('end_time must be greater than start_time')
+            raise ValueError("end_time must be greater than start_time")
         return self
+
 
 class TimelinePlan(BaseModel):
     total_duration: float = Field(..., ge=0.0)
     items: List[TimelineItem] = Field(..., min_items=1)
-    
-    @model_validator(mode='after')
+
+    @model_validator(mode="after")
     def validate_timeline_consistency(self):
         if not self.items:
             return self
-        
+
         orders = [item.order for item in self.items]
         if sorted(orders) != list(range(1, len(orders) + 1)):
-            raise ValueError('Timeline items must have consecutive order numbers starting from 1')
-        
+            raise ValueError(
+                "Timeline items must have consecutive order numbers starting from 1"
+            )
+
         return self
+
 
 class StoryBeat(BaseModel):
     order: int = Field(..., ge=1)
@@ -105,6 +103,7 @@ class StoryBeat(BaseModel):
     supporting_clips: List[int] = Field(default_factory=list)
     duration_target: Optional[float] = Field(default=None, ge=0.0)
 
+
 class Storyboard(BaseModel):
     theme: str
     target_audience: Optional[str] = ""
@@ -112,25 +111,30 @@ class Storyboard(BaseModel):
     narrative_arc: Optional[str] = ""
     beats: List[StoryBeat] = Field(default_factory=list)
 
+
 class EditorAgentResponse(BaseModel):
     storyboard: Optional[Storyboard] = None
     timeline: TimelinePlan
 
+
 class EditingProjectRequest(BaseModel):
     name: str
     content_type: ContentType
-    target_platform: Literal["youtube_shorts", "tiktok", "instagram_reels", "custom"] = "youtube_shorts"
+    target_platform: Literal[
+        "youtube_shorts", "tiktok", "instagram_reels", "custom"
+    ] = "youtube_shorts"
     video_ids: List[int] = Field(..., min_items=1)
     brief: Optional[str] = None
-    
-    @field_validator('video_ids')
+
+    @field_validator("video_ids")
     @classmethod
     def validate_video_ids(cls, v):
         if not all(vid > 0 for vid in v):
-            raise ValueError('All video IDs must be positive integers')
+            raise ValueError("All video IDs must be positive integers")
         if len(set(v)) != len(v):
-            raise ValueError('Video IDs must be unique')
+            raise ValueError("Video IDs must be unique")
         return v
+
 
 class EditingProjectResponse(BaseModel):
     project_id: int
@@ -142,6 +146,7 @@ class EditingProjectResponse(BaseModel):
     selected_clips: int
     final_duration: float
 
+
 class ContentAnalysisResponse(BaseModel):
     total_clips: int = Field(..., ge=0)
     total_duration: float = Field(..., ge=0.0)
@@ -151,44 +156,53 @@ class ContentAnalysisResponse(BaseModel):
     usable_clips: int = Field(..., ge=0)
     content_density: float = Field(..., ge=0.0, le=1.0)
 
+
 class VideoFormatSchema(BaseModel):
     width: int = Field(..., gt=0)
-    height: int = Field(..., gt=0) 
+    height: int = Field(..., gt=0)
     name: str
     ratio: str
-    
-    @model_validator(mode='after')
+
+    @model_validator(mode="after")
     def validate_format(self):
         calculated_ratio = self.width / self.height
-        ratio_map = {
-            "9:16": 9/16,
-            "16:9": 16/9,
-            "1:1": 1.0
-        }
-        
+        ratio_map = {"9:16": 9 / 16, "16:9": 16 / 9, "1:1": 1.0}
+
         if self.ratio in ratio_map:
             expected_ratio = ratio_map[self.ratio]
             if abs(calculated_ratio - expected_ratio) > 0.01:
-                raise ValueError(f'Width/height does not match specified ratio {self.ratio}')
-        
+                raise ValueError(
+                    f"Width/height does not match specified ratio {self.ratio}"
+                )
+
         return self
+
 
 class RenderRequest(BaseModel):
     output_filename: Optional[str] = Field(None, description="Custom output filename")
-    video_format: Literal["portrait", "landscape", "square"] = Field(default="portrait", description="Video format")
-    quality: Literal["low", "medium", "high"] = Field(default="high", description="Render quality")
+    video_format: Literal["portrait", "landscape", "square"] = Field(
+        default="portrait", description="Video format"
+    )
+    quality: Literal["low", "medium", "high"] = Field(
+        default="high", description="Render quality"
+    )
     use_gpu: bool = Field(default=False, description="Use GPU acceleration")
-    max_duration: Optional[float] = Field(default=59.0, description="Maximum video duration in seconds")
-    
-    @field_validator('output_filename')
+    max_duration: Optional[float] = Field(
+        default=59.0, description="Maximum video duration in seconds"
+    )
+
+    @field_validator("output_filename")
     @classmethod
     def validate_output_filename(cls, v):
         if v is not None:
             if not v.strip():
-                raise ValueError('output_filename cannot be empty')
-            if not v.endswith(('.mp4', '.mov', '.avi')):
-                raise ValueError('output_filename must have a valid video file extension')
+                raise ValueError("output_filename cannot be empty")
+            if not v.endswith((".mp4", ".mov", ".avi")):
+                raise ValueError(
+                    "output_filename must have a valid video file extension"
+                )
         return v
+
 
 class RenderResponse(BaseModel):
     job_id: str
@@ -197,6 +211,7 @@ class RenderResponse(BaseModel):
     output_filename: Optional[str] = None
     created_at: str
     settings: Optional[Dict[str, Any]] = None
+
 
 class RenderJobStatus(BaseModel):
     job_id: str
@@ -209,13 +224,16 @@ class RenderJobStatus(BaseModel):
     duration: Optional[float] = None
     settings: Optional[Dict[str, Any]] = None
 
+
 class OutputFile(BaseModel):
     filename: str
     size_mb: float = Field(..., ge=0.0)
     created_at: str
 
+
 class OutputListResponse(BaseModel):
     files: List[OutputFile]
+
 
 class SystemInfo(BaseModel):
     ffmpeg_available: bool
@@ -223,9 +241,11 @@ class SystemInfo(BaseModel):
     quality_settings: Dict[str, Dict[str, Any]]
     output_directory: str
 
+
 class JobListResponse(BaseModel):
     jobs: List[Dict[str, Any]]
     total: int
+
 
 class ErrorDetail(BaseModel):
     error_type: str
@@ -234,11 +254,92 @@ class ErrorDetail(BaseModel):
     context: Optional[Dict[str, Any]] = None
     suggestions: List[str] = Field(default_factory=list)
 
+
 class OperationStatus(BaseModel):
     success: bool
     message: str
     details: Optional[ErrorDetail] = None
     execution_time: Optional[float] = None
+
+
+# Content Creation Schemas
+class ContentProjectRequest(BaseModel):
+    content_type: ContentType
+    target_platforms: List[
+        Literal["youtube_shorts", "tiktok", "instagram_reels", "linkedin", "twitter"]
+    ]
+    objective: str = Field(default="Create social media content")
+    max_duration: Optional[float] = Field(
+        default=59.0, description="Maximum video duration in seconds"
+    )
+
+
+class SceneSegment(BaseModel):
+    start_time: float
+    end_time: float
+    scene_type: str
+    summary: str
+    engagement_score: float = Field(..., ge=0.0, le=10.0)
+    viral_potential: float = Field(..., ge=0.0, le=10.0)
+    transcript: str = ""
+
+
+class ContentAnalysisResult(BaseModel):
+    dominant_scene_type: str
+    avg_engagement: float
+    viral_potential: float
+    total_scenes: int
+    content_density: float
+
+
+class TimelineScene(BaseModel):
+    start_time: float
+    end_time: float
+    scene_type: str
+    summary: str
+    engagement_score: float
+    viral_potential: float
+
+
+class MasterTimeline(BaseModel):
+    total_duration: float
+    scenes: List[TimelineScene]
+    platform_optimized: List[str]
+
+
+class ContentResponse(BaseModel):
+    video_id: int
+    content_analysis: ContentAnalysisResult
+    master_timeline: MasterTimeline
+    platform_content: Dict[str, Any]
+    recommendations: List[str]
+    timeline: Optional[Dict[str, Any]] = None
+
+
+# Caption Schemas
+class CaptionRequest(BaseModel):
+    language: Optional[str] = Field(
+        default=None, description="Language code or None for auto-detect"
+    )
+    style: Literal["modern", "classic", "minimal", "bold"] = Field(default="modern")
+    position: Literal["bottom", "center", "top"] = Field(default="bottom")
+    enhance_audio: bool = Field(default=True)
+
+
+class CaptionSegment(BaseModel):
+    start_time: float
+    end_time: float
+    text: str
+    confidence: Optional[float] = None
+
+
+class CaptionResponse(BaseModel):
+    video_id: int
+    language: str
+    segments: List[CaptionSegment]
+    preview_text: str
+    total_duration: float
+
 
 def get_platform_video_format(platform: str) -> VideoFormatSchema:
     """Get recommended video format for platform"""
@@ -254,19 +355,29 @@ def get_platform_video_format(platform: str) -> VideoFormatSchema:
         ),
         "youtube_shorts": VideoFormatSchema(
             width=1080, height=1920, name="portrait", ratio="9:16"
-        )
+        ),
     }
     return formats.get(platform, formats["tiktok"])
+
 
 def get_platform_limits(platform: str) -> Dict[str, float]:
     """Get platform limits as dictionary"""
     limits = {
-        "youtube_shorts": {"max_duration": 59.0, "ideal_clips": 6, "max_clip_duration": 8.0},
+        "youtube_shorts": {
+            "max_duration": 59.0,
+            "ideal_clips": 6,
+            "max_clip_duration": 8.0,
+        },
         "tiktok": {"max_duration": 59.0, "ideal_clips": 7, "max_clip_duration": 7.0},
-        "instagram_reels": {"max_duration": 59.0, "ideal_clips": 6, "max_clip_duration": 8.0},
-        "custom": {"max_duration": 300.0, "ideal_clips": 20, "max_clip_duration": 15.0}
+        "instagram_reels": {
+            "max_duration": 59.0,
+            "ideal_clips": 6,
+            "max_clip_duration": 8.0,
+        },
+        "custom": {"max_duration": 300.0, "ideal_clips": 20, "max_clip_duration": 15.0},
     }
     return limits.get(platform, limits["custom"])
+
 
 # Model rebuilds
 EditorAgentResponse.model_rebuild()

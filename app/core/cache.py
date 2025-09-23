@@ -1,8 +1,9 @@
-import json
-import hashlib
-from typing import Any, Optional, Union
-from functools import wraps
 import asyncio
+import hashlib
+import json
+from functools import wraps
+from typing import Any, Optional
+
 import redis.asyncio as redis
 
 from app.config import settings
@@ -36,10 +37,7 @@ _cache_ttl = {}
 
 def _generate_cache_key(*args, **kwargs) -> str:
     """Generate a cache key from function arguments."""
-    key_data = {
-        "args": args,
-        "kwargs": sorted(kwargs.items())
-    }
+    key_data = {"args": args, "kwargs": sorted(kwargs.items())}
     key_string = json.dumps(key_data, sort_keys=True, default=str)
     return hashlib.md5(key_string.encode()).hexdigest()
 
@@ -52,6 +50,7 @@ async def set_cache(key: str, value: Any, ttl: int = 3600) -> None:
         else:
             # Fallback to memory cache
             import time
+
             _memory_cache[key] = value
             _cache_ttl[key] = time.time() + ttl
     except Exception as e:
@@ -67,6 +66,7 @@ async def get_cache(key: str) -> Optional[Any]:
         else:
             # Fallback to memory cache
             import time
+
             if key in _memory_cache:
                 if time.time() < _cache_ttl.get(key, 0):
                     return _memory_cache[key]
@@ -94,11 +94,14 @@ async def delete_cache(key: str) -> None:
 
 def cache_result(ttl: int = 3600, key_prefix: str = ""):
     """Decorator to cache function results."""
+
     def decorator(func):
         @wraps(func)
         async def async_wrapper(*args, **kwargs):
             # Generate cache key
-            cache_key = f"{key_prefix}:{func.__name__}:{_generate_cache_key(*args, **kwargs)}"
+            cache_key = (
+                f"{key_prefix}:{func.__name__}:{_generate_cache_key(*args, **kwargs)}"
+            )
 
             # Try to get from cache
             cached_result = await get_cache(cache_key)
@@ -155,9 +158,9 @@ async def clear_cache_pattern(pattern: str) -> None:
         else:
             # Memory cache pattern matching
             import fnmatch
+
             keys_to_delete = [
-                key for key in _memory_cache.keys()
-                if fnmatch.fnmatch(key, pattern)
+                key for key in _memory_cache.keys() if fnmatch.fnmatch(key, pattern)
             ]
             for key in keys_to_delete:
                 _memory_cache.pop(key, None)
@@ -171,8 +174,3 @@ async def clear_cache_pattern(pattern: str) -> None:
 async def invalidate_video_cache(video_id: int) -> None:
     """Invalidate all cache entries for a specific video."""
     await clear_cache_pattern(f"*video:{video_id}*")
-
-
-async def invalidate_user_cache(user_id: int) -> None:
-    """Invalidate all cache entries for a specific user."""
-    await clear_cache_pattern(f"*user:{user_id}*")

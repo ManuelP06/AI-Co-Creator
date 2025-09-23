@@ -1,19 +1,17 @@
-import os, uuid, shutil
-from fastapi import UploadFile, HTTPException
+import os
+import shutil
+import uuid
+
+from fastapi import HTTPException, UploadFile
 from sqlalchemy.orm import Session
+
 from app import models, schemas
 from app.config import settings
 
 UPLOAD_DIR = settings.upload_directory
 
-async def handle_upload(username: str, file: UploadFile, db: Session):
-    user = db.query(models.User).filter(models.User.username == username).first()
-    if not user:
-        user = models.User(username=username)
-        db.add(user)
-        db.commit()
-        db.refresh(user)
 
+async def handle_upload(file: UploadFile, db: Session):
     file_ext = os.path.splitext(file.filename)[1]
     unique_filename = f"{uuid.uuid4().hex}{file_ext}"
     file_path = os.path.join(UPLOAD_DIR, unique_filename)
@@ -27,10 +25,7 @@ async def handle_upload(username: str, file: UploadFile, db: Session):
     file_size = os.path.getsize(file_path)
 
     video = models.Video(
-        user_id=user.id,
-        file_path=file_path,
-        original_filename=file.filename,
-        file_size=file_size
+        file_path=file_path, original_filename=file.filename, file_size=file_size
     )
     db.add(video)
     db.commit()
@@ -40,22 +35,18 @@ async def handle_upload(username: str, file: UploadFile, db: Session):
         video_id=video.id,
         filename=video.original_filename,
         file_path=video.file_path,
-        file_size=video.file_size
+        file_size=video.file_size,
     )
 
 
-def list_videos(username: str, db: Session):
-    user = db.query(models.User).filter(models.User.username == username).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    videos = db.query(models.Video).filter(models.Video.user_id == user.id).all()
+def list_videos(db: Session):
+    videos = db.query(models.Video).all()
     return [
         schemas.VideoUploadResponse(
             video_id=v.id,
             filename=v.original_filename,
             file_path=v.file_path,
-            file_size=v.file_size
+            file_size=v.file_size,
         )
         for v in videos
     ]

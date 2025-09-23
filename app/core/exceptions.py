@@ -1,4 +1,5 @@
 from typing import Any, Dict, Optional
+
 from fastapi import HTTPException, status
 
 
@@ -76,16 +77,6 @@ class FileUploadException(AICoCreatorException):
         )
 
 
-class AuthenticationException(AICoCreatorException):
-    """Raised when authentication fails."""
-
-    def __init__(self, message: str = "Authentication failed"):
-        super().__init__(
-            message=message,
-            error_code="AUTHENTICATION_ERROR",
-        )
-
-
 class ValidationException(AICoCreatorException):
     """Raised when validation fails."""
 
@@ -107,11 +98,12 @@ def to_http_exception(exc: AICoCreatorException) -> HTTPException:
         "MODEL_LOAD_ERROR": status.HTTP_503_SERVICE_UNAVAILABLE,
         "INSUFFICIENT_RESOURCES": status.HTTP_507_INSUFFICIENT_STORAGE,
         "FILE_UPLOAD_ERROR": status.HTTP_400_BAD_REQUEST,
-        "AUTHENTICATION_ERROR": status.HTTP_401_UNAUTHORIZED,
         "VALIDATION_ERROR": status.HTTP_422_UNPROCESSABLE_ENTITY,
     }
 
-    status_code = error_mapping.get(exc.error_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
+    status_code = error_mapping.get(
+        exc.error_code, status.HTTP_500_INTERNAL_SERVER_ERROR
+    )
 
     detail = {
         "message": exc.message,

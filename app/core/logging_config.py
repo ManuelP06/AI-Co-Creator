@@ -1,10 +1,11 @@
+import json
 import logging
 import sys
-from typing import Dict, Any
-from rich.logging import RichHandler
-from rich.console import Console
-import json
 from datetime import datetime
+from typing import Any, Dict
+
+from rich.console import Console
+from rich.logging import RichHandler
 
 from app.config import settings
 
@@ -67,7 +68,7 @@ def setup_logging() -> None:
         handler.setFormatter(
             logging.Formatter(
                 fmt="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-                datefmt="%Y-%m-%d %H:%M:%S"
+                datefmt="%Y-%m-%d %H:%M:%S",
             )
         )
 

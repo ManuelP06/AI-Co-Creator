@@ -52,7 +52,7 @@ WORKDIR /app
 COPY . .
 
 # Create necessary directories
-RUN mkdir -p uploads output logs && \
+RUN mkdir -p uploads outputs logs && \
     chown -R appuser:appuser /app
 
 # Switch to non-root user

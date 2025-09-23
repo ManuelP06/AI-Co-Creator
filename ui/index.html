@@ -1,0 +1,991 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Co-Creator</title>
+    <style>
+        /* Enhanced Design System */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --primary-bg: #ffffff;
+            --secondary-bg: #f8f9fa;
+            --border-color: #e1e5e9;
+            --text-primary: #2c3e50;
+            --text-secondary: #64748b;
+            --accent-color: #3b82f6;
+            --success-color: #10b981;
+            --warning-color: #f59e0b;
+            --error-color: #ef4444;
+            --info-color: #06b6d4;
+            --border-radius: 8px;
+            --shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+            --shadow-lg: 0 4px 6px rgba(0, 0, 0, 0.1);
+            --transition: all 0.2s ease;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background-color: var(--primary-bg);
+            color: var(--text-primary);
+            line-height: 1.6;
+            font-size: 14px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        /* Header */
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+            padding: 20px 0;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .header h1 {
+            font-size: 24px;
+            font-weight: 600;
+        }
+
+        .header .controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        /* Layout */
+        .main-layout {
+            display: grid;
+            grid-template-columns: 250px 1fr;
+            gap: 30px;
+        }
+
+        .sidebar {
+            background: var(--secondary-bg);
+            border-radius: var(--border-radius);
+            padding: 20px;
+            height: fit-content;
+            border: 1px solid var(--border-color);
+        }
+
+        .content {
+            background: var(--primary-bg);
+            border-radius: var(--border-radius);
+            border: 1px solid var(--border-color);
+            min-height: 700px;
+        }
+
+        /* Components */
+        .card {
+            background: var(--primary-bg);
+            border: 1px solid var(--border-color);
+            border-radius: var(--border-radius);
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: var(--shadow);
+            transition: var(--transition);
+        }
+
+        .card:hover {
+            box-shadow: var(--shadow-lg);
+        }
+
+        .card-header {
+            font-weight: 600;
+            margin-bottom: 15px;
+            font-size: 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .card-content {
+            color: var(--text-secondary);
+        }
+
+        /* Buttons */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 8px 16px;
+            border: 1px solid var(--border-color);
+            border-radius: var(--border-radius);
+            background: var(--primary-bg);
+            color: var(--text-primary);
+            text-decoration: none;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: var(--transition);
+            gap: 8px;
+        }
+
+        .btn:hover:not(:disabled) {
+            background: var(--secondary-bg);
+            border-color: var(--accent-color);
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .btn-primary {
+            background: var(--accent-color);
+            color: white;
+            border-color: var(--accent-color);
+        }
+
+        .btn-primary:hover:not(:disabled) {
+            background: #2563eb;
+            border-color: #2563eb;
+        }
+
+        .btn-success {
+            background: var(--success-color);
+            color: white;
+            border-color: var(--success-color);
+        }
+
+        .btn-warning {
+            background: var(--warning-color);
+            color: white;
+            border-color: var(--warning-color);
+        }
+
+        .btn-danger {
+            background: var(--error-color);
+            color: white;
+            border-color: var(--error-color);
+        }
+
+        .btn-info {
+            background: var(--info-color);
+            color: white;
+            border-color: var(--info-color);
+        }
+
+        .btn-small {
+            padding: 4px 8px;
+            font-size: 12px;
+        }
+
+        /* Forms */
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-label {
+            display: block;
+            margin-bottom: 6px;
+            font-weight: 500;
+            color: var(--text-primary);
+        }
+
+        .form-input, .form-select {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid var(--border-color);
+            border-radius: var(--border-radius);
+            background: var(--primary-bg);
+            color: var(--text-primary);
+            transition: var(--transition);
+        }
+
+        .form-input:focus, .form-select:focus {
+            outline: none;
+            border-color: var(--accent-color);
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+        }
+
+        /* Status badges */
+        .status {
+            display: inline-flex;
+            align-items: center;
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 500;
+            gap: 4px;
+        }
+
+        .status-pending {
+            background: rgba(245, 158, 11, 0.1);
+            color: var(--warning-color);
+        }
+
+        .status-processing {
+            background: rgba(59, 130, 246, 0.1);
+            color: var(--accent-color);
+        }
+
+        .status-completed {
+            background: rgba(16, 185, 129, 0.1);
+            color: var(--success-color);
+        }
+
+        .status-error {
+            background: rgba(239, 68, 68, 0.1);
+            color: var(--error-color);
+        }
+
+        /* Progress */
+        .progress {
+            width: 100%;
+            height: 8px;
+            background: var(--secondary-bg);
+            border-radius: 4px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+
+        .progress-bar {
+            height: 100%;
+            background: var(--accent-color);
+            transition: width 0.3s ease;
+            width: 0%;
+        }
+
+        /* Tables */
+        .table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .table th,
+        .table td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .table th {
+            background: var(--secondary-bg);
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .table tr:hover {
+            background: var(--secondary-bg);
+        }
+
+        /* Navigation */
+        .nav {
+            list-style: none;
+            margin-bottom: 20px;
+        }
+
+        .nav-item {
+            margin-bottom: 8px;
+        }
+
+        .nav-link {
+            display: block;
+            padding: 10px 12px;
+            color: var(--text-secondary);
+            text-decoration: none;
+            border-radius: var(--border-radius);
+            transition: var(--transition);
+        }
+
+        .nav-link:hover,
+        .nav-link.active {
+            background: var(--accent-color);
+            color: white;
+        }
+
+        /* Tabs */
+        .tab-content {
+            padding: 20px;
+        }
+
+        .tab-content.hidden {
+            display: none;
+        }
+
+        /* Alerts */
+        .alert {
+            padding: 12px 16px;
+            border-radius: var(--border-radius);
+            border: 1px solid;
+            margin-bottom: 20px;
+            position: relative;
+        }
+
+        .alert-info {
+            background: rgba(59, 130, 246, 0.1);
+            border-color: rgba(59, 130, 246, 0.2);
+            color: var(--accent-color);
+        }
+
+        .alert-success {
+            background: rgba(16, 185, 129, 0.1);
+            border-color: rgba(16, 185, 129, 0.2);
+            color: var(--success-color);
+        }
+
+        .alert-warning {
+            background: rgba(245, 158, 11, 0.1);
+            border-color: rgba(245, 158, 11, 0.2);
+            color: var(--warning-color);
+        }
+
+        .alert-error {
+            background: rgba(239, 68, 68, 0.1);
+            border-color: rgba(239, 68, 68, 0.2);
+            color: var(--error-color);
+        }
+
+        /* Loading spinner */
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid var(--border-color);
+            border-radius: 50%;
+            border-top-color: var(--accent-color);
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Processing Pipeline Styles */
+        .pipeline-step {
+            border: 1px solid var(--border-color);
+            border-radius: var(--border-radius);
+            margin-bottom: 20px;
+            background: var(--primary-bg);
+            transition: var(--transition);
+        }
+
+        .pipeline-step:hover {
+            box-shadow: var(--shadow);
+        }
+
+        .pipeline-step.active {
+            border-color: var(--accent-color);
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+        }
+
+        .pipeline-step.completed {
+            border-color: var(--success-color);
+            background: rgba(16, 185, 129, 0.02);
+        }
+
+        .pipeline-step.error {
+            border-color: var(--error-color);
+            background: rgba(239, 68, 68, 0.02);
+        }
+
+        .step-header {
+            padding: 15px 20px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+        }
+
+        .step-content {
+            padding: 20px;
+            display: none;
+        }
+
+        .step-content.show {
+            display: block;
+        }
+
+        /* Video grid */
+        .video-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+        }
+
+        .video-card {
+            border: 1px solid var(--border-color);
+            border-radius: var(--border-radius);
+            overflow: hidden;
+            transition: var(--transition);
+            cursor: pointer;
+        }
+
+        .video-card:hover {
+            box-shadow: var(--shadow-lg);
+            border-color: var(--accent-color);
+        }
+
+        .video-card.selected {
+            border-color: var(--accent-color);
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+        }
+
+        .video-thumbnail {
+            width: 100%;
+            height: 180px;
+            background: var(--secondary-bg);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-secondary);
+            font-size: 48px;
+        }
+
+        .video-info {
+            padding: 15px;
+        }
+
+        .video-title {
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .video-meta {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-bottom: 10px;
+        }
+
+        .video-status {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        /* Utilities */
+        .text-center { text-align: center; }
+        .text-right { text-align: right; }
+        .text-small { font-size: 12px; }
+        .text-muted { color: var(--text-secondary); }
+        .mb-0 { margin-bottom: 0; }
+        .mb-1 { margin-bottom: 10px; }
+        .mb-2 { margin-bottom: 20px; }
+        .mt-1 { margin-top: 10px; }
+        .mt-2 { margin-top: 20px; }
+        .flex { display: flex; }
+        .flex-between { justify-content: space-between; }
+        .flex-center { justify-content: center; }
+        .items-center { align-items: center; }
+        .gap-1 { gap: 10px; }
+        .gap-2 { gap: 20px; }
+        .w-full { width: 100%; }
+        .hidden { display: none; }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .main-layout {
+                grid-template-columns: 1fr;
+                gap: 20px;
+            }
+
+            .container {
+                padding: 15px;
+            }
+
+            .header {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 15px;
+            }
+
+            .video-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div>
+                <h1>AI Co-Creator</h1>
+                <p class="text-muted">Video processing pipeline</p>
+            </div>
+            <div class="controls">
+                <button class="btn btn-info btn-small" id="refresh-btn">
+                    <span class="spinner hidden" id="refresh-spinner"></span>
+                    Refresh
+                </button>
+                <div class="status" id="connection-status">
+                    <span class="spinner"></span>
+                    Connecting...
+                </div>
+            </div>
+        </div>
+
+        <div class="main-layout">
+            <!-- Sidebar -->
+            <aside class="sidebar">
+                <nav>
+                    <ul class="nav">
+                        <li class="nav-item">
+                            <a href="#library" class="nav-link active" data-tab="library">
+                                Video Library
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a href="#pipeline" class="nav-link" data-tab="pipeline">
+                                Processing
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a href="#editor" class="nav-link" data-tab="editor">
+                                Editor
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a href="#renderer" class="nav-link" data-tab="renderer">
+                                Renderer
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a href="#upload" class="nav-link" data-tab="upload">
+                                Upload
+                            </a>
+                        </li>
+                    </ul>
+                </nav>
+
+                <div class="card">
+                    <div class="card-header">Selected Video</div>
+                    <div class="card-content" id="selected-video-info">
+                        <div class="text-center text-muted">
+                            No video selected
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">System Status</div>
+                    <div class="card-content">
+                        <div class="mb-1">
+                            <div class="flex flex-between items-center">
+                                <span class="text-small">API</span>
+                                <span class="status status-pending" id="api-status">Checking...</span>
+                            </div>
+                        </div>
+                        <div class="mb-1">
+                            <div class="flex flex-between items-center">
+                                <span class="text-small">GPU</span>
+                                <span class="status status-pending" id="gpu-status">Checking...</span>
+                            </div>
+                        </div>
+                        <div class="mb-0">
+                            <div class="flex flex-between items-center">
+                                <span class="text-small">FFmpeg</span>
+                                <span class="status status-pending" id="ffmpeg-status">Checking...</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+
+            <!-- Main Content -->
+            <main class="content">
+                <!-- Video Library Tab -->
+                <div id="library-tab" class="tab-content">
+                    <div class="card-header">
+                        <h2>Video Library</h2>
+                        <div class="flex gap-1">
+                            <button class="btn btn-small" id="load-videos-btn">Refresh</button>
+                            <button class="btn btn-primary btn-small" onclick="document.querySelector('[data-tab=upload]').click()">Upload New</button>
+                        </div>
+                    </div>
+
+                    <div id="videos-loading" class="alert alert-info">
+                        <span class="spinner"></span>
+                        Loading videos...
+                    </div>
+
+                    <div id="videos-container" class="hidden">
+                        <div class="video-grid" id="videos-grid">
+                            <!-- Videos will be loaded here -->
+                        </div>
+                    </div>
+
+                    <div id="no-videos" class="hidden">
+                        <div class="alert alert-info text-center">
+                            <h3>No videos found</h3>
+                            <p>Upload a video to begin processing</p>
+                            <button class="btn btn-primary mt-1" onclick="document.querySelector('[data-tab=upload]').click()">Upload Video</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Manual Pipeline Tab -->
+                <div id="pipeline-tab" class="tab-content hidden">
+                    <div class="card-header">
+                        <h2>Processing Pipeline</h2>
+                        <div id="pipeline-video-selector" class="hidden">
+                            <select class="form-select" style="width: 200px;" id="pipeline-video-select">
+                                <option value="">Select a video...</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div id="no-video-selected" class="alert alert-warning">
+                        <h3>No Video Selected</h3>
+                        <p>Select a video from the library to start processing.</p>
+                        <button class="btn btn-primary" onclick="document.querySelector('[data-tab=library]').click()">Go to Library</button>
+                    </div>
+
+                    <div id="pipeline-steps" class="hidden">
+                        <!-- Step 1: Shot Detection -->
+                        <div class="pipeline-step" id="step-shot-detection">
+                            <div class="step-header" onclick="toggleStep('shot-detection')">
+                                <div>
+                                    <h3>1. Shot Detection</h3>
+                                    <p class="text-muted text-small">Detect scene boundaries in the video</p>
+                                </div>
+                                <div class="flex items-center gap-1">
+                                    <span class="status status-pending" id="shot-detection-status">Ready to start</span>
+                                    <span>▼</span>
+                                </div>
+                            </div>
+                            <div class="step-content" id="shot-detection-content">
+                                <div class="form-group">
+                                    <label class="form-label">Detection Method</label>
+                                    <select class="form-select" id="shot-method">
+                                        <option value="transnet">TransNetV2</option>
+                                        <option value="pyscene">PySceneDetect</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">Threshold</label>
+                                    <input type="number" class="form-input" id="shot-threshold" value="0.5" min="0" max="1" step="0.1">
+                                    <small class="text-muted">Lower = more sensitive (more shots)</small>
+                                </div>
+                                <div class="flex gap-1">
+                                    <button class="btn btn-primary" id="start-shot-detection">Start Shot Detection</button>
+                                    <button class="btn btn-warning" id="clear-shots">Clear Existing Shots</button>
+                                </div>
+                                <div id="shot-detection-progress" class="hidden mt-1">
+                                    <div class="progress">
+                                        <div class="progress-bar" id="shot-detection-progress-bar"></div>
+                                    </div>
+                                </div>
+                                <div id="shot-detection-result" class="hidden mt-1"></div>
+                            </div>
+                        </div>
+
+                        <!-- Step 2: Transcription -->
+                        <div class="pipeline-step" id="step-transcription">
+                            <div class="step-header" onclick="toggleStep('transcription')">
+                                <div>
+                                    <h3>2. Transcription</h3>
+                                    <p class="text-muted text-small">Convert audio to text using Whisper AI</p>
+                                </div>
+                                <div class="flex items-center gap-1">
+                                    <span class="status status-pending" id="transcription-status">Ready to start</span>
+                                    <span>▼</span>
+                                </div>
+                            </div>
+                            <div class="step-content" id="transcription-content">
+                                <div class="form-group">
+                                    <label style="display: flex; align-items: center; gap: 8px;">
+                                        <input type="radio" name="transcription-mode" value="per_shot" checked> Per Shot
+                                    </label>
+                                    <label style="display: flex; align-items: center; gap: 8px;">
+                                        <input type="radio" name="transcription-mode" value="full_video"> Full Video
+                                    </label>
+                                </div>
+                                <div class="flex gap-1">
+                                    <button class="btn btn-primary" id="start-transcription">Start Transcription</button>
+                                    <button class="btn btn-warning" id="clear-transcripts">Clear Existing Transcripts</button>
+                                </div>
+                                <div id="transcription-progress" class="hidden mt-1">
+                                    <div class="progress">
+                                        <div class="progress-bar" id="transcription-progress-bar"></div>
+                                    </div>
+                                </div>
+                                <div id="transcription-result" class="hidden mt-1"></div>
+                            </div>
+                        </div>
+
+                        <!-- Step 3: Content Analysis -->
+                        <div class="pipeline-step" id="step-analysis">
+                            <div class="step-header" onclick="toggleStep('analysis')">
+                                <div>
+                                    <h3>3. Content Analysis</h3>
+                                    <p class="text-muted text-small">AI analysis of content potential</p>
+                                </div>
+                                <div class="flex items-center gap-1">
+                                    <span class="status status-pending" id="analysis-status">Ready to start</span>
+                                    <span>▼</span>
+                                </div>
+                            </div>
+                            <div class="step-content" id="analysis-content">
+                                <div class="form-group">
+                                    <label class="form-label">Content Type</label>
+                                    <select class="form-select" id="content-type">
+                                        <option value="interview">Interview</option>
+                                        <option value="podcast">Podcast</option>
+                                        <option value="educational">Educational</option>
+                                        <option value="entertainment">Entertainment</option>
+                                        <option value="documentary">Documentary</option>
+                                        <option value="product_demo">Product Demo</option>
+                                        <option value="marketing">Marketing</option>
+                                        <option value="tutorial">Tutorial</option>
+                                    </select>
+                                </div>
+                                <div class="flex gap-1">
+                                    <button class="btn btn-primary" id="start-analysis">Start Analysis</button>
+                                    <button class="btn btn-warning" id="clear-analysis">Clear Existing Analysis</button>
+                                </div>
+                                <div id="analysis-progress" class="hidden mt-1">
+                                    <div class="progress">
+                                        <div class="progress-bar" id="analysis-progress-bar"></div>
+                                    </div>
+                                </div>
+                                <div id="analysis-result" class="hidden mt-1"></div>
+                            </div>
+                        </div>
+
+                        <!-- Pipeline Actions -->
+                        <div class="card mt-2">
+                            <div class="card-header">Pipeline Actions</div>
+                            <div class="card-content">
+                                <div class="flex gap-1 mb-2">
+                                    <button class="btn btn-success" id="run-full-pipeline">Run Complete Pipeline</button>
+                                    <button class="btn btn-info" id="get-video-status">Refresh Status</button>
+                                </div>
+                                <div class="flex gap-1">
+                                    <button class="btn btn-danger btn-small" id="clear-all-data">Clear All Data</button>
+                                    <button class="btn btn-small" id="export-status">Export Status</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Editor Tab -->
+                <div id="editor-tab" class="tab-content hidden">
+                    <div class="card-header">
+                        <h2>Video Editor</h2>
+                        <div id="editor-video-selector" class="hidden">
+                            <select class="form-select" style="width: 200px;" id="editor-video-select">
+                                <option value="">Select a video...</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div id="editor-no-video" class="alert alert-warning">
+                        <h3>No Video Selected</h3>
+                        <p>Please select a processed video to start editing.</p>
+                        <button class="btn btn-primary" onclick="document.querySelector('[data-tab=library]').click()">Go to Library</button>
+                    </div>
+
+                    <div id="editor-content" class="hidden">
+                        <div class="flex gap-2 mb-2">
+                            <div style="flex: 2;">
+                                <div class="card">
+                                    <div class="card-header">Timeline</div>
+                                    <div class="card-content">
+                                        <div id="timeline-container">
+                                            <p class="text-muted">No timeline available. Generate content first.</p>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="card">
+                                    <div class="card-header">Content Generation</div>
+                                    <div class="card-content">
+                                        <div class="form-group">
+                                            <label class="form-label">Target Platforms</label>
+                                            <div class="flex gap-1" style="flex-wrap: wrap;">
+                                                <label style="display: flex; align-items: center; gap: 5px;">
+                                                    <input type="checkbox" name="editor-platforms" value="youtube_shorts" checked> YouTube Shorts
+                                                </label>
+                                                <label style="display: flex; align-items: center; gap: 5px;">
+                                                    <input type="checkbox" name="editor-platforms" value="tiktok" checked> TikTok
+                                                </label>
+                                                <label style="display: flex; align-items: center; gap: 5px;">
+                                                    <input type="checkbox" name="editor-platforms" value="instagram_reels"> Instagram Reels
+                                                </label>
+                                                <label style="display: flex; align-items: center; gap: 5px;">
+                                                    <input type="checkbox" name="editor-platforms" value="linkedin"> LinkedIn
+                                                </label>
+                                            </div>
+                                        </div>
+                                        <div class="form-group">
+                                            <label class="form-label">Objective</label>
+                                            <input type="text" class="form-input" id="editor-objective" placeholder="Create highlights">
+                                        </div>
+                                        <div class="flex gap-1">
+                                            <button class="btn btn-primary" id="generate-content">Generate Content</button>
+                                            <button class="btn" id="regenerate-content">Regenerate</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div style="flex: 1;">
+                                <div class="card">
+                                    <div class="card-header">Content Analysis</div>
+                                    <div class="card-content" id="content-analysis">
+                                        <p class="text-muted">Generate content to see analysis</p>
+                                    </div>
+                                </div>
+
+                                <div class="card">
+                                    <div class="card-header">Recommendations</div>
+                                    <div class="card-content" id="ai-recommendations">
+                                        <p class="text-muted">Generate content to see recommendations</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Renderer Tab -->
+                <div id="renderer-tab" class="tab-content hidden">
+                    <div class="card-header">
+                        <h2>Video Renderer</h2>
+                        <div id="renderer-video-selector" class="hidden">
+                            <select class="form-select" style="width: 200px;" id="renderer-video-select">
+                                <option value="">Select a video...</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div id="renderer-no-video" class="alert alert-warning">
+                        <h3>No Video Selected</h3>
+                        <p>Please select a video with generated content to start rendering.</p>
+                        <button class="btn btn-primary" onclick="document.querySelector('[data-tab=library]').click()">Go to Library</button>
+                    </div>
+
+                    <div id="renderer-content" class="hidden">
+                        <div class="flex gap-2">
+                            <div style="flex: 1;">
+                                <div class="card">
+                                    <div class="card-header">Platform Presets</div>
+                                    <div class="card-content">
+                                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;" id="platform-presets">
+                                            <!-- Platform presets will be loaded here -->
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="card">
+                                    <div class="card-header">Quality Settings</div>
+                                    <div class="card-content">
+                                        <div class="form-group">
+                                            <label class="form-label">Quality Level</label>
+                                            <select class="form-select" id="render-quality">
+                                                <option value="ultra">Ultra</option>
+                                                <option value="high" selected>High</option>
+                                                <option value="medium">Medium</option>
+                                                <option value="fast">Fast</option>
+                                            </select>
+                                        </div>
+                                        <div class="form-group">
+                                            <label style="display: flex; align-items: center; gap: 8px;">
+                                                <input type="checkbox" id="gpu-acceleration" checked> GPU Acceleration
+                                            </label>
+                                        </div>
+                                        <div class="form-group mb-0">
+                                            <label style="display: flex; align-items: center; gap: 8px;">
+                                                <input type="checkbox" id="audio-enhancement" checked> Audio Enhancement
+                                            </label>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div style="flex: 1;">
+                                <div class="card">
+                                    <div class="card-header">Render Queue</div>
+                                    <div class="card-content">
+                                        <div id="render-queue-list">
+                                            <p class="text-muted">No render jobs in queue</p>
+                                        </div>
+                                        <div class="flex gap-1 mt-2">
+                                            <button class="btn btn-primary" id="start-render">Start Render</button>
+                                            <button class="btn" id="add-to-queue">Add to Queue</button>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="card">
+                                    <div class="card-header">Render Progress</div>
+                                    <div class="card-content">
+                                        <div id="render-progress-info">
+                                            <p class="text-muted">No active renders</p>
+                                        </div>
+                                        <div id="render-progress-bar" class="hidden">
+                                            <div class="progress">
+                                                <div class="progress-bar" id="render-progress"></div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="card">
+                                    <div class="card-header">Download Center</div>
+                                    <div class="card-content">
+                                        <div id="download-list">
+                                            <p class="text-muted">No completed renders</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Upload Tab -->
+                <div id="upload-tab" class="tab-content hidden">
+                    <h2 style="margin-bottom: 20px;">Upload New Video</h2>
+
+                    <div class="card">
+                        <div class="card-header">Video Upload</div>
+                        <div class="card-content">
+                            <div style="border: 2px dashed var(--border-color); border-radius: var(--border-radius); padding: 40px 20px; text-align: center; cursor: pointer; transition: var(--transition); margin-bottom: 20px;" id="upload-area">
+                                <div style="font-size: 48px; color: var(--text-secondary); margin-bottom: 10px;">+</div>
+                                <h3>Drop your video here</h3>
+                                <p class="text-muted">or click to select files</p>
+                                <p class="text-small text-muted mt-1">Supports MP4, MOV, AVI • Max 2GB</p>
+                                <input type="file" id="file-input" accept="video/*" style="display: none;">
+                            </div>
+
+                            <div id="upload-progress" class="hidden">
+                                <div class="mb-1">
+                                    <div class="flex flex-between">
+                                        <span class="text-small">Upload Progress</span>
+                                        <span class="text-small" id="upload-percentage">0%</span>
+                                    </div>
+                                </div>
+                                <div class="progress">
+                                    <div class="progress-bar" id="upload-progress-bar"></div>
+                                </div>
+                            </div>
+
+                            <button class="btn btn-primary w-full" id="upload-btn" disabled>
+                                Upload Video
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

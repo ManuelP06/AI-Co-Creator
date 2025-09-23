@@ -1,10 +1,12 @@
 import time
 import uuid
-from fastapi import Request, Response
-from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
-from app.core.logging_config import get_logger, LogContext
+from fastapi import Request, Response
+from starlette.middleware.base import (BaseHTTPMiddleware,
+                                       RequestResponseEndpoint)
+
 from app.core.exceptions import AICoCreatorException, to_http_exception
+from app.core.logging_config import LogContext, get_logger
 
 logger = get_logger("middleware")
 
@@ -105,7 +107,9 @@ class CORSHeaderMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
 
         response.headers["Access-Control-Allow-Origin"] = "*"
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+        response.headers[
+            "Access-Control-Allow-Methods"
+        ] = "GET, POST, PUT, DELETE, OPTIONS"
         response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
 
         return response

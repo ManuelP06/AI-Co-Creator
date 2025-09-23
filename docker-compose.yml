@@ -8,14 +8,14 @@ services:
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql://postgres:password@db:5432/ai_co_creator
+      - DATABASE_URL=sqlite:///./videos.db
       - REDIS_URL=redis://redis:6379/0
     volumes:
       - ./uploads:/app/uploads
-      - ./output:/app/output
+      - ./outputs:/app/outputs
       - ./logs:/app/logs
+      - ./videos.db:/app/videos.db
     depends_on:
-      - db
       - redis
     restart: unless-stopped
     healthcheck:
@@ -24,22 +24,6 @@ services:
       timeout: 10s
       retries: 3
 
-  db:
-    image: postgres:15-alpine
-    environment:
-      POSTGRES_DB: ai_co_creator
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: password
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
 
   redis:
     image: redis:7-alpine
@@ -65,6 +49,5 @@ services:
       - OLLAMA_HOST=0.0.0.0
 
 volumes:
-  postgres_data:
   redis_data:
   ollama_data:
