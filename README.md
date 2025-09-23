@@ -148,6 +148,19 @@ uploads/             # Source videos
 ```
 
 
+## Development Status
+
+ **Beta Software - Testing Phase**
+
+This software is currently in testing and development phase. It is open-source and actively being developed. Please note:
+
+- Not all features are fully functional (100% reliability not guaranteed)
+- The software can be tested but is not production-ready
+- Some functionalities may have bugs or limitations
+- Continuous development and improvements are ongoing
+
+Feel free to test, contribute, and report issues to help improve the platform.
+
 ## License
 
 MIT License
