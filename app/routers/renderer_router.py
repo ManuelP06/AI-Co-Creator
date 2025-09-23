@@ -68,9 +68,14 @@ def render_video(
 
     # Create job
     job_id = f"render_{video_id}_{int(datetime.now().timestamp())}"
-    output_filename = (
-        request.output_filename or f"video_{video_id}_{request.video_format}.mp4"
-    )
+    # Validate and sanitize output filename
+    if request.output_filename and request.output_filename.strip() and request.output_filename != "string":
+        # Ensure it has proper extension
+        output_filename = request.output_filename.strip()
+        if not output_filename.endswith(('.mp4', '.mov', '.avi')):
+            output_filename = f"{output_filename}.mp4"
+    else:
+        output_filename = f"video_{video_id}_{request.video_format}.mp4"
     output_path = os.path.join(OUTPUT_DIR, output_filename)
 
     render_jobs[job_id] = {

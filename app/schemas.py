@@ -197,6 +197,9 @@ class RenderRequest(BaseModel):
         if v is not None:
             if not v.strip():
                 raise ValueError("output_filename cannot be empty")
+            # Reject common placeholder values
+            if v.lower() in ["string", "filename", "output", "video"]:
+                raise ValueError("output_filename cannot be a placeholder value")
             if not v.endswith((".mp4", ".mov", ".avi")):
                 raise ValueError(
                     "output_filename must have a valid video file extension"

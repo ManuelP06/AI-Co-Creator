@@ -153,6 +153,7 @@ async def create_edit(
             objective=request.user_brief or "Create engaging social media content",
             target_audience="general audience",
             tone="engaging",
+            options=options,
         )
 
         logger.info(f"Edit completed for video {video_id}")

@@ -39,7 +39,7 @@ docker-compose up --build
 
 The software can be used in two ways:
 
-### 1. Web Interface (Recommended for General Use and Testing, Still a bit Buggy)
+### 1. Web Interface (Recommended for General Use and Testing)
 Serve the UI and open in your browser:
 ```bash
 cd ui && python -m http.server 3000
@@ -115,7 +115,7 @@ OLLAMA_MODEL=llama3.1:8b
 - **TikTok** (1080x1920, 60s max)
 - **Instagram Reels** (1080x1920, 90s max)
 - **LinkedIn** (1920x1080, 300s max)
-- **Twitter** (1280x720, 140s max)
+- **Twitter (X)** (1280x720, 140s max)
 
 ## Content Types
 
@@ -152,14 +152,13 @@ uploads/             # Source videos
 
  **Beta Software - Testing Phase**
 
-This software is currently in testing and development phase. It is open-source and actively being developed. Please note:
+This software is currently in testing and development phase. Please note:
 
-- Not all features are fully functional (100% reliability not guaranteed)
+- Not all features are fully functional 
 - The software can be tested but is not production-ready
 - Some functionalities may have bugs or limitations
-- Continuous development and improvements are ongoing
 
-Feel free to test, contribute, and report issues to help improve the platform.
+Feel free to test and contribute.
 
 ## License
 

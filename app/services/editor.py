@@ -522,9 +522,10 @@ class ContentAnalyzer:
 class ContentCreator:
     """Main intelligent content creation system"""
 
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, options: Dict[str, Any] = None):
         self.db = db
         self.llm_client = client
+        self.options = options or {}
 
     def analyze_video_content(
         self, video_id: int, content_type: ContentType
@@ -564,7 +565,7 @@ class ContentCreator:
             scene_segments.append(scene_segment)
 
         # Post-process and optimize scenes
-        optimized_scenes = self._optimize_scene_flow(scene_segments)
+        optimized_scenes = self._optimize_scene_flow(scene_segments, self.options)
 
         logger.info(f"Created {len(optimized_scenes)} intelligent scene segments")
 
@@ -573,7 +574,7 @@ class ContentCreator:
             logger.warning("No scenes could be created from shots - checking for transcripts")
 
             # Check if shots have transcripts
-            shots_with_transcripts = [s for s in shots if getattr(s, "transcript", "") and len(s.transcript.strip()) >= 10]
+            shots_with_transcripts = [s for s in shots if getattr(s, "transcript", "") and len(getattr(s, "transcript", "").strip()) >= 10]
 
             if not shots_with_transcripts:
                 raise ValueError(f"Cannot generate content: No transcripts found for {len(shots)} shots. Please run transcription first.")
@@ -585,22 +586,26 @@ class ContentCreator:
                 fallback_scene = SceneSegment(
                     start_time=first_shot.start_time,
                     end_time=first_shot.end_time,
-                    scene_type=SceneType.CONTENT,
+                    scene_type=SceneType.MAIN_CONTENT,
+                    confidence=0.5,
+                    content_summary="Available video content",
                     engagement_score=5.0,
                     viral_potential=3.0,
-                    key_points=["Content available for processing"],
-                    summary="Available video content",
-                    duration=first_shot.end_time - first_shot.start_time
+                    key_moments=["Content available for processing"]
                 )
                 optimized_scenes = [fallback_scene]
 
         return optimized_scenes
 
-    def _optimize_scene_flow(self, scenes: List[SceneSegment]) -> List[SceneSegment]:
+    def _optimize_scene_flow(self, scenes: List[SceneSegment], options: Dict[str, Any] = None) -> List[SceneSegment]:
         """Optimize scene flow for narrative structure"""
 
         if not scenes:
             return scenes
+
+        options = options or {}
+        min_engagement = options.get('min_engagement_score', 1.0)
+        min_composite = options.get('min_composite_score', 1.0)
 
         # Sort by start time
         scenes.sort(key=lambda s: s.start_time)
@@ -612,7 +617,7 @@ class ContentCreator:
         hook_candidates = [
             s
             for s in scenes[:3]  # First 3 scenes
-            if s.engagement_score >= 6.0 or s.scene_type == SceneType.HOOK
+            if s.engagement_score >= min_engagement or s.scene_type == SceneType.HOOK
         ]
 
         if hook_candidates:
@@ -631,7 +636,7 @@ class ContentCreator:
             s
             for s in scenes
             if s.scene_type in [SceneType.MAIN_CONTENT, SceneType.CLIMAX]
-            and s.composite_score >= 6.0
+            and s.composite_score >= min_composite
         ]
 
         # Sort by composite score and take best ones
@@ -700,7 +705,7 @@ class ContentCreator:
             "platform_content": platform_content,
             "master_timeline": master_timeline,
             "timeline": master_timeline,  # Add timeline field for schema compatibility
-            "recommendations": self._generate_content_recommendations(project),
+            "recommendations": self._generate_content_recommendations(project, self.options),
         }
 
     def _create_platform_content(
@@ -729,7 +734,7 @@ class ContentCreator:
 
         # Select best scenes for platform
         selected_scenes = self._select_scenes_for_platform(
-            project.scene_segments, config
+            project.scene_segments, config, self.options
         )
 
         # Generate AI-powered script
@@ -765,19 +770,21 @@ class ContentCreator:
         }
 
     def _select_scenes_for_platform(
-        self, scenes: List[SceneSegment], config: Dict[str, Any]
+        self, scenes: List[SceneSegment], config: Dict[str, Any], options: Dict[str, Any] = None
     ) -> List[SceneSegment]:
         """Select optimal scenes for platform"""
 
         max_duration = config["max_duration"]
         ideal_scenes = config["ideal_scenes"]
+        options = options or {}
+        min_composite = options.get('min_composite_score', 1.0)
 
         # Early return if no scenes available
         if not scenes:
             return []
 
         # Filter high-quality scenes
-        quality_scenes = [s for s in scenes if s.composite_score >= 6.0]
+        quality_scenes = [s for s in scenes if s.composite_score >= min_composite]
         if not quality_scenes:
             quality_scenes = sorted(
                 scenes, key=lambda s: s.composite_score, reverse=True
@@ -947,11 +954,12 @@ Format as a timeline script with timestamps and scene descriptions.
             "items": timeline_items
         }
 
-    def _generate_content_recommendations(self, project: ContentProject) -> List[str]:
+    def _generate_content_recommendations(self, project: ContentProject, options: Dict[str, Any] = None) -> List[str]:
         """Generate intelligent content recommendations"""
 
         recommendations = []
         scenes = project.scene_segments
+        options = options or {}
 
         if not scenes:
             return ["No scenes available for analysis"]
@@ -967,7 +975,8 @@ Format as a timeline script with timestamps and scene descriptions.
         hook_scenes = [
             s for s in scenes if s.scene_type == SceneType.HOOK or s.start_time < 10
         ]
-        if not hook_scenes or (hook_scenes and max([s.engagement_score for s in hook_scenes], default=0) < 6.0):
+        min_engagement = options.get('min_engagement_score', 1.0)
+        if not hook_scenes or (hook_scenes and max([s.engagement_score for s in hook_scenes], default=0) < min_engagement):
             recommendations.append(
                 "Weak opening hook - add attention-grabbing elements in first 10 seconds"
             )
@@ -1006,6 +1015,7 @@ def create_intelligent_content(
     target_audience: str = "general audience",
     tone: str = "engaging",
     max_duration: float = 60.0,
+    options: Dict[str, Any] = None,
 ) -> Dict[str, Any]:
     """Main entry point for intelligent content creation"""
 
@@ -1024,7 +1034,7 @@ def create_intelligent_content(
         max_duration=max_duration,
     )
 
-    creator = ContentCreator(db)
+    creator = ContentCreator(db, options or {})
     result = creator.create_content(project)
 
     # Save timeline and storyboard to database
@@ -1054,29 +1064,17 @@ def analyze_content_potential(
         return {"error": "No scenes found for analysis"}
 
     return {
-        "video_id": video_id,
-        "content_type": content_type,
-        "analysis": {
-            "total_scenes": len(scenes),
-            "total_duration": sum(s.duration for s in scenes),
-            "avg_engagement": statistics.mean([s.engagement_score for s in scenes]) if scenes else 0,
-            "max_engagement": max([s.engagement_score for s in scenes], default=0),
-            "avg_viral_potential": statistics.mean([s.viral_potential for s in scenes]) if scenes else 0,
-            "max_viral_potential": max([s.viral_potential for s in scenes], default=0),
-            "scene_types": dict(Counter([s.scene_type.value for s in scenes])),
-            "high_quality_scenes": len([s for s in scenes if s.composite_score >= 7.0]),
-            "usable_scenes": len([s for s in scenes if s.composite_score >= 5.0]),
-        },
-        "top_scenes": [
-            {
-                "start_time": s.start_time,
-                "end_time": s.end_time,
-                "scene_type": s.scene_type.value,
-                "engagement_score": s.engagement_score,
-                "viral_potential": s.viral_potential,
-                "composite_score": s.composite_score,
-                "summary": s.content_summary,
-            }
-            for s in sorted(scenes, key=lambda x: x.composite_score, reverse=True)[:10]
-        ],
+        "total_clips": len(scenes),
+        "total_duration": sum(s.duration for s in scenes),
+        "average_score": statistics.mean([s.engagement_score for s in scenes]) if scenes else 0,
+        "max_score": max([s.engagement_score for s in scenes], default=0),
+        "high_quality_clips": len([s for s in scenes if s.composite_score >= 7.0]),
+        "usable_clips": len([s for s in scenes if s.composite_score >= 5.0]),
+        "content_density": len(scenes) / sum(s.duration for s in scenes) if scenes and sum(s.duration for s in scenes) > 0 else 0,
+        "viral_potential": statistics.mean([s.viral_potential for s in scenes]) if scenes else 0,
+        "recommendations": [
+            "Add more engaging content" if len([s for s in scenes if s.engagement_score >= 7.0]) < len(scenes) * 0.3 else "Good engagement level",
+            "Consider shorter clips" if statistics.mean([s.duration for s in scenes]) > 30 else "Good clip duration",
+            "Focus on high-energy moments" if statistics.mean([s.viral_potential for s in scenes]) < 5.0 else "Strong viral potential"
+        ]
     }
