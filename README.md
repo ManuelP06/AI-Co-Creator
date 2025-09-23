@@ -39,7 +39,7 @@ docker-compose up --build
 
 The software can be used in two ways:
 
-### 1. Web Interface (Recommended for General Use and mTesting, Still a bit Buggy)
+### 1. Web Interface (Recommended for General Use and Testing, Still a bit Buggy)
 Serve the UI and open in your browser:
 ```bash
 cd ui && python -m http.server 3000
