@@ -1,4 +1,3 @@
-// AI Co-Creator - Enhanced UI with Full Functionality
 class AICoCreatorManualApp {
     constructor() {
         this.apiUrl = 'http://localhost:8000/api/v1';
